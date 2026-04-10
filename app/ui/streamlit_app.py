@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from app.agents.answer import build_answer_context
+from app.agents.code_lookup import try_build_code_lookup_answer
 from app.agents.controller import run_agent_retrieval
 from app.agents.embedding_indexer import build_embedding_index
 from app.core.config import AppConfig
@@ -36,96 +37,117 @@ def main() -> None:
     provider, selection = ProviderRouter(config).resolve()
 
     st.title("EasyRAG")
-    st.caption("Один документ - одна локальная база. Загрузили один раз, потом можно быстро открыть готовую базу.")
+    st.caption("Загрузите DOCX и задавайте вопросы в чате.")
 
-    workspace_id = _render_workspace_step(provider, selection)
-    st.divider()
-    _render_question_step(provider, selection, workspace_id)
-    st.divider()
-    _render_diagnostics(provider.name, selection, workspace_id)
+    tab_chat, tab_debug = st.tabs(["Чат", "Отладка"])
+
+    with tab_chat:
+        workspace_id = _render_workspace_picker(provider, selection)
+        _render_chat(provider, selection, workspace_id)
+
+    with tab_debug:
+        _render_debug(provider.name, selection, st.session_state.get("workspace_id"))
 
 
-def _render_workspace_step(provider, selection) -> str | None:
-    st.subheader("1. Выберите базу или загрузите документ")
-
+def _render_workspace_picker(provider, selection) -> str | None:
     workspaces = list_workspaces()
     selected_workspace_id = st.session_state.get("workspace_id")
 
-    if workspaces:
-        labels = [_workspace_label(item) for item in workspaces]
-        ids = [item.workspace_id for item in workspaces]
-        selected_index = ids.index(selected_workspace_id) if selected_workspace_id in ids else 0
-        selected_label = st.selectbox("Готовые локальные базы", labels, index=selected_index)
-        selected_workspace_id = ids[labels.index(selected_label)]
-        st.session_state["workspace_id"] = selected_workspace_id
-        _render_workspace_summary(selected_workspace_id)
-    else:
-        st.info("Готовых баз пока нет. Загрузите DOCX ниже.")
+    with st.container(border=True):
+        col_left, col_right = st.columns([1, 1])
 
-    uploaded_file = st.file_uploader("Загрузить DOCX и автоматически подготовить базу", type=["docx"])
-    if uploaded_file is not None:
-        selected_workspace_id = _prepare_uploaded_workspace(uploaded_file, provider, selection)
-        st.session_state["workspace_id"] = selected_workspace_id
+        with col_left:
+            uploaded_file = st.file_uploader("Загрузить DOCX", type=["docx"])
+            if uploaded_file is not None:
+                selected_workspace_id = _prepare_uploaded_workspace(uploaded_file, provider, selection)
+                st.session_state["workspace_id"] = selected_workspace_id
+
+        with col_right:
+            if workspaces:
+                labels = [_workspace_label(item) for item in workspaces]
+                ids = [item.workspace_id for item in workspaces]
+                selected_index = ids.index(selected_workspace_id) if selected_workspace_id in ids else 0
+                selected_label = st.selectbox("Или открыть готовую базу", labels, index=selected_index)
+                selected_workspace_id = ids[labels.index(selected_label)]
+                st.session_state["workspace_id"] = selected_workspace_id
+            else:
+                st.info("Готовых баз пока нет.")
+
+        if selected_workspace_id:
+            _render_workspace_summary(selected_workspace_id)
 
     return selected_workspace_id
 
 
-def _render_question_step(provider, selection, workspace_id: str | None) -> None:
-    st.subheader("2. Задайте вопрос")
+def _render_chat(provider, selection, workspace_id: str | None) -> None:
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
 
     if not workspace_id:
-        st.info("Сначала выберите готовую базу или загрузите DOCX.")
+        st.info("Сначала загрузите DOCX. После подготовки базы чат станет доступен.")
         return
 
+    for message in st.session_state["messages"]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    prompt = st.chat_input("Напишите вопрос по документу")
+    if not prompt:
+        return
+
+    st.session_state["messages"].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        answer = _answer_question(provider, selection, workspace_id, prompt)
+        st.markdown(answer)
+
+    st.session_state["messages"].append({"role": "assistant", "content": answer})
+
+
+def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str:
     records = load_workspace_records(workspace_id)
     embeddings = load_workspace_embeddings(workspace_id)
-    if not records:
-        st.warning("В выбранной базе нет индекса. Загрузите документ заново.")
-        return
-
-    query = st.text_input("Вопрос", placeholder="Например: Что такое код 8580? Или просто: Н1.1", label_visibility="collapsed")
-    if not query:
-        return
 
     agent_result = run_agent_retrieval(
         provider=provider,
         records=records,
         embedding_records=embeddings,
-        query=query,
+        query=prompt,
         embed_model=selection.embed_model,
         limit=12,
     )
 
+    st.session_state["last_debug"] = {
+        "query": prompt,
+        "workspace_id": workspace_id,
+        "query_type": agent_result.query_type,
+        "mode": agent_result.mode,
+        "evidence": asdict(agent_result.evidence),
+        "steps": [{"name": step.name, "details": step.details} for step in agent_result.steps],
+        "results": [_result_to_debug(result) for result in agent_result.results],
+    }
+
     if not agent_result.results:
-        st.warning("Ничего не найдено. Попробуйте точную формулировку, код или номер счета.")
-        with st.expander("Trace"):
-            _render_trace(agent_result)
-        return
+        return "Не нашел подходящий фрагмент в выбранном документе. Попробуйте точный код, номер счета или другую формулировку."
 
-    st.subheader("3. Найденный контекст")
-    _render_best_match(agent_result.results[0])
+    code_answer = try_build_code_lookup_answer(prompt, agent_result.results)
+    if code_answer is not None:
+        st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
+        return code_answer.answer
 
-    with st.expander("Показать остальные совпадения"):
-        _render_results_table(agent_result.results)
+    answer_context = build_answer_context(prompt, agent_result.results, evidence=agent_result.evidence)
+    st.session_state["last_debug"]["citations"] = answer_context.citations
 
-    st.subheader("4. Ответ")
-    st.caption(f"Уверенность: {agent_result.evidence.confidence}. Основание: {agent_result.evidence.reason}.")
-    answer_context = build_answer_context(query, agent_result.results, evidence=agent_result.evidence)
+    try:
+        generated = provider.generate(answer_context.prompt, model=selection.chat_model)
+    except ProviderError as exc:
+        return f"Нашел контекст, но модель ответа недоступна: {exc}"
+    except Exception as exc:
+        return f"Нашел контекст, но не смог сформировать ответ: {exc}"
 
-    if st.button("Сформировать ответ", type="primary"):
-        try:
-            with st.spinner("Формирую ответ..."):
-                generated = provider.generate(answer_context.prompt, model=selection.chat_model)
-        except ProviderError as exc:
-            st.error(f"Ошибка модели: {exc}")
-        except Exception as exc:
-            st.error(f"Не удалось сформировать ответ: {exc}")
-        else:
-            st.markdown(generated.text or "Модель вернула пустой ответ.")
-
-    with st.expander("Источники и trace"):
-        st.json(answer_context.citations)
-        _render_trace(agent_result)
+    return generated.text or "Модель вернула пустой ответ."
 
 
 def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
@@ -141,11 +163,10 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
     info = load_workspace_info(workspace_id)
 
     if info and info.embedding_count > 0 and info.embed_model == selection.embed_model:
-        st.success("Готовая локальная база уже есть. Она загружена из кэша.")
-        _render_workspace_summary(workspace_id)
+        st.success("База уже готова. Открываю из кэша.")
         return workspace_id
 
-    st.info("Готовлю локальную базу для выбранного документа.")
+    st.info("Готовлю базу. Это нужно сделать один раз для документа.")
     parse_progress = st.progress(0, text="Индексация документа...")
 
     parsed = parse_docx_bytes(uploaded_file.name, content)
@@ -153,22 +174,23 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
     save_parsed_payload(uploaded_file.name, parsed.to_dict())
     records = build_search_records(parsed)
     save_workspace_records(workspace_id, parsed.source_name, file_hash, records)
-    parse_progress.progress(1.0, text=f"Индексация завершена: {len(records)} фрагментов, ~{_records_tokens(records)} токенов")
+    parse_progress.progress(1.0, text=f"Индексация готова: {len(records)} фрагментов, ~{_records_tokens(records)} токенов")
 
     _build_workspace_embeddings(workspace_id, provider, selection, records)
-    _render_workspace_summary(workspace_id)
+    st.session_state["messages"] = []
     return workspace_id
 
 
 def _build_workspace_embeddings(workspace_id: str, provider, selection, records: list[SearchRecord]) -> None:
     info = load_workspace_info(workspace_id)
     if info and info.embedding_count > 0 and info.embed_model == selection.embed_model:
-        st.success("Embeddings уже построены для этой модели. Повторно не считаю.")
+        st.success("Embeddings уже есть. Повторно не считаю.")
         return
 
-    total_records = len([record for record in records if record.record_type != "table" and record.text.strip()])
-    total_tokens = sum(estimate_tokens(record.text) for record in records if record.record_type != "table" and record.text.strip())
-    progress = st.progress(0, text=f"Строю embeddings: 0/{total_records}, ~0/{total_tokens} токенов")
+    selected = [record for record in records if record.record_type != "table" and record.text.strip()]
+    total_records = len(selected)
+    total_tokens = sum(estimate_tokens(record.text) for record in selected)
+    progress = st.progress(0, text=f"Embeddings: 0/{total_records}, ~0/{total_tokens} токенов")
     log_box = st.empty()
     log_lines: list[str] = []
     processed_tokens = 0
@@ -176,12 +198,9 @@ def _build_workspace_embeddings(workspace_id: str, provider, selection, records:
     def on_progress(index: int, total: int, record: SearchRecord, token_count: int) -> None:
         nonlocal processed_tokens
         processed_tokens += token_count
-        progress.progress(
-            index / max(total, 1),
-            text=f"Строю embeddings: {index}/{total}, ~{processed_tokens}/{total_tokens} токенов",
-        )
+        progress.progress(index / max(total, 1), text=f"Embeddings: {index}/{total}, ~{processed_tokens}/{total_tokens} токенов")
         log_lines.append(f"{index}/{total}: {record.record_id} ({record.record_type}), ~{token_count} tokens")
-        log_box.code("\n".join(log_lines[-12:]), language="text")
+        log_box.code("\n".join(log_lines[-8:]), language="text")
 
     try:
         embeddings = build_embedding_index(
@@ -192,22 +211,51 @@ def _build_workspace_embeddings(workspace_id: str, provider, selection, records:
         )
         save_workspace_embeddings(workspace_id, embeddings, selection.embed_model)
     except Exception as exc:
-        st.warning(f"Индекс exact готов, но embeddings не построены: {exc}")
+        st.warning(f"Exact-поиск готов, но embeddings не построены: {exc}")
         return
 
-    st.success(f"Embeddings построены: {len(embeddings)} фрагментов, примерно {processed_tokens} токенов.")
+    st.success(f"Embeddings готовы: {len(embeddings)} фрагментов, примерно {processed_tokens} токенов.")
 
 
 def _render_workspace_summary(workspace_id: str) -> None:
     info = load_workspace_info(workspace_id)
     if info is None:
         return
+    st.caption(f"Текущая база: {info.source_name} · фрагментов: {info.record_count} · embeddings: {info.embedding_count}")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Документ", info.source_name)
-    col2.metric("Фрагментов", info.record_count)
-    col3.metric("Embeddings", info.embedding_count)
-    col4.metric("Токенов ~", info.token_count)
+
+def _render_debug(provider_name: str, selection, workspace_id: str | None) -> None:
+    st.subheader("Отладка")
+    st.caption("Эта вкладка для суперпользователя: источники, trace, модели, eval.")
+
+    info = load_workspace_info(workspace_id) if workspace_id else None
+    st.write("Текущая база")
+    st.json(asdict(info) if info else {})
+
+    st.write("Модели")
+    st.json(
+        {
+            "provider": provider_name,
+            "chat_model": selection.chat_model,
+            "embed_model": selection.embed_model,
+            "active_model": selection.active_model,
+            "reason": selection.reason,
+        }
+    )
+
+    st.write("Последний запрос")
+    st.json(st.session_state.get("last_debug", {}))
+
+    if st.button("Запустить проверку качества"):
+        try:
+            results = run_eval()
+        except Exception as exc:
+            st.error(f"Проверка не запустилась: {exc}")
+            return
+        hit_at_1 = sum(1 for result in results if result.hit_at_1)
+        hit_at_3 = sum(1 for result in results if result.hit_at_3)
+        st.write({"кейсов": len(results), "hit@1": hit_at_1, "hit@3": hit_at_3})
+        st.dataframe([asdict(result) for result in results], use_container_width=True, hide_index=True)
 
 
 def _workspace_label(info) -> str:
@@ -219,60 +267,16 @@ def _records_tokens(records: list[SearchRecord]) -> int:
     return sum(estimate_tokens(record.text) for record in records)
 
 
-def _render_best_match(result) -> None:
-    record = result.record
-    st.markdown(f"**Лучшее совпадение:** `{record.record_id}` · `{record.record_type}` · score `{round(result.score, 2)}`")
-    if record.section_path:
-        st.caption(" / ".join(record.section_path))
-    st.info(result.snippet)
-
-
-def _render_results_table(results) -> None:
-    rows = [
-        {
-            "score": round(result.score, 2),
-            "id": result.record.record_id,
-            "тип": result.record.record_type,
-            "документ": result.record.source_name,
-            "раздел": " / ".join(result.record.section_path),
-            "фрагмент": result.snippet,
-        }
-        for result in results
-    ]
-    st.dataframe(rows, use_container_width=True, hide_index=True)
-
-
-def _render_trace(agent_result) -> None:
-    st.json([{"шаг": step.name, "детали": step.details} for step in agent_result.steps])
-
-
-def _render_diagnostics(provider_name: str, selection, workspace_id: str | None) -> None:
-    with st.expander("Диагностика"):
-        st.write("Текущая база")
-        st.json(asdict(load_workspace_info(workspace_id)) if workspace_id and load_workspace_info(workspace_id) else {})
-
-        st.write("Модели")
-        st.json(
-            {
-                "provider": provider_name,
-                "chat_model": selection.chat_model,
-                "embed_model": selection.embed_model,
-                "active_model": selection.active_model,
-                "reason": selection.reason,
-            }
-        )
-
-        if st.button("Запустить проверку качества"):
-            try:
-                results = run_eval()
-            except Exception as exc:
-                st.error(f"Проверка не запустилась: {exc}")
-                return
-
-            hit_at_1 = sum(1 for result in results if result.hit_at_1)
-            hit_at_3 = sum(1 for result in results if result.hit_at_3)
-            st.write({"кейсов": len(results), "hit@1": hit_at_1, "hit@3": hit_at_3})
-            st.dataframe([asdict(result) for result in results], use_container_width=True, hide_index=True)
+def _result_to_debug(result) -> dict:
+    return {
+        "score": round(result.score, 2),
+        "record_id": result.record.record_id,
+        "record_type": result.record.record_type,
+        "source_name": result.record.source_name,
+        "section_path": result.record.section_path,
+        "matched_terms": result.matched_terms,
+        "snippet": result.snippet,
+    }
 
 
 if __name__ == "__main__":
