@@ -28,8 +28,15 @@ def try_build_norm_lookup_answer(query: str, results: list[SearchResult]) -> Nor
         return None
 
     anchor = _select_anchor_paragraph(relevant)
-    paragraphs = _select_anchor_context(anchor, results)
+    paragraphs = _select_anchor_context(anchor, results, include_previous=_asks_table(query))
     text = "\n\n".join(result.record.text for result in paragraphs[:5])
+
+    if _asks_table(query):
+        return NormLookupAnswer(
+            target_norm=target,
+            answer=_build_component_table_answer(target, paragraphs),
+            confidence="medium",
+        )
 
     if _asks_simple(query):
         return NormLookupAnswer(
@@ -81,13 +88,14 @@ def _select_anchor_paragraph(results: list[SearchResult]) -> SearchResult:
     return results[0]
 
 
-def _select_anchor_context(anchor: SearchResult, results: list[SearchResult]) -> list[SearchResult]:
+def _select_anchor_context(anchor: SearchResult, results: list[SearchResult], include_previous: bool = False) -> list[SearchResult]:
     anchor_number = _paragraph_sort_key(anchor)
+    start_number = anchor_number - 3 if include_previous else anchor_number
     nearby = [
         result
         for result in results
         if result.record.record_type == "paragraph"
-        and anchor_number <= _paragraph_sort_key(result) <= anchor_number + 6
+        and start_number <= _paragraph_sort_key(result) <= anchor_number + 6
     ]
     return _dedupe_paragraphs([anchor, *nearby])
 
@@ -112,6 +120,59 @@ def _asks_simple(query: str) -> bool:
             "объясни проще",
         ]
     )
+
+
+def _asks_table(query: str) -> bool:
+    normalized = normalize_text(query)
+    return any(marker in normalized for marker in ["таблиц", "столбец", "компонент"])
+
+
+def _build_component_table_answer(target: str, paragraphs: list[SearchResult]) -> str:
+    paragraph_texts = [result.record.text for result in paragraphs]
+    components = _extract_components(paragraph_texts)
+    if not components:
+        return _build_simple_answer(target, paragraphs)
+
+    rows = [
+        "| Компонент | Какие коды и счета входят |",
+        "|---|---|",
+    ]
+    for component in _requested_component_order(components):
+        rows.append(f"| {component} | {components[component]} |")
+
+    source = paragraphs[0].record if paragraphs else None
+    source_text = f"\n\nИсточник: {source.source_name}, {source.record_id}." if source else ""
+    return "\n".join(rows) + source_text
+
+
+def _extract_components(paragraphs: list[str]) -> dict[str, str]:
+    components: dict[str, str] = {}
+    for paragraph in paragraphs:
+        match = re.match(r"^([А-Яа-яA-Za-z][А-Яа-яA-Za-z0-9*]*)\s+-\s+(.+)", paragraph, flags=re.DOTALL)
+        if not match:
+            continue
+
+        name = match.group(1).strip()
+        description = _compact(match.group(2))
+        if name in {"Лат", "Овт", "Овт*", "Лам"}:
+            components[name] = description
+
+        if name == "Лат" and "Лам" not in components and "показатель Лам" in paragraph:
+            components["Лам"] = "Упоминается как высоколиквидные активы в составе расчета Лат; детали состава Лам приведены в пункте 4.2/связанных положениях, если они есть в контексте."
+
+    return components
+
+
+def _requested_component_order(components: dict[str, str]) -> list[str]:
+    ordered = [name for name in ["Лам", "Лат", "Овт", "Овт*"] if name in components]
+    return ordered or list(components)
+
+
+def _compact(text: str, limit: int = 1200) -> str:
+    compacted = re.sub(r"\s+", " ", text).strip()
+    if len(compacted) <= limit:
+        return compacted
+    return compacted[: limit - 3].rstrip() + "..."
 
 
 def _build_simple_answer(target: str, paragraphs: list[SearchResult]) -> str:
