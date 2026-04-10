@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import re
 
 from app.agents.answer import build_answer_context
 from app.agents.code_lookup import try_build_code_lookup_answer
@@ -88,6 +89,10 @@ def _render_chat(provider, selection, workspace_id: str | None) -> None:
         st.info("Сначала загрузите DOCX. После подготовки базы чат станет доступен.")
         return
 
+    if st.button("Очистить диалог"):
+        _clear_chat_context()
+        st.rerun()
+
     for message in st.session_state["messages"]:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -111,6 +116,7 @@ def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str
     records = load_workspace_records(workspace_id)
     embeddings = load_workspace_embeddings(workspace_id)
     effective_query = _build_effective_query(prompt)
+    st.session_state["last_effective_query"] = effective_query
 
     agent_result = run_agent_retrieval(
         provider=provider,
@@ -159,13 +165,18 @@ def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str
 
 
 def _build_effective_query(prompt: str) -> str:
-    if not _is_followup(prompt):
+    target = _extract_query_target(prompt)
+    if target:
+        st.session_state["last_user_query"] = prompt
+        st.session_state["last_query_target"] = target
         return prompt
 
-    previous_user_message = _previous_user_message()
+    previous_user_message = st.session_state.get("last_user_query") or _previous_user_message()
     if not previous_user_message:
+        st.session_state["last_user_query"] = prompt
         return prompt
 
+    st.session_state["last_user_query"] = previous_user_message
     return f"{previous_user_message}\nУточнение: {prompt}"
 
 
@@ -177,21 +188,27 @@ def _previous_user_message() -> str | None:
     return None
 
 
-def _is_followup(prompt: str) -> bool:
-    normalized = prompt.lower().replace("ё", "е").strip()
-    followup_markers = [
-        "простыми словами",
-        "в двух словах",
-        "коротко",
-        "подробнее",
-        "объясни проще",
-        "а если",
-        "а подробнее",
-        "что это значит",
-    ]
-    if any(marker in normalized for marker in followup_markers):
-        return True
-    return len(normalized.split()) <= 4 and not any(char.isdigit() for char in normalized)
+def _extract_query_target(prompt: str) -> str | None:
+    norm_match = re.search(r"\b[НN]\s*\d+(?:\.\d+)?\b", prompt, flags=re.IGNORECASE)
+    if norm_match:
+        return norm_match.group(0).replace(" ", "").upper()
+
+    numeric_match = re.search(r"\b\d{3,}(?:\.\d+)?\b", prompt)
+    if numeric_match:
+        return numeric_match.group(0)
+
+    return None
+
+
+def _clear_chat_context() -> None:
+    for key in [
+        "messages",
+        "last_debug",
+        "last_user_query",
+        "last_query_target",
+        "last_effective_query",
+    ]:
+        st.session_state.pop(key, None)
 
 
 def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
