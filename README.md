@@ -64,6 +64,12 @@ FORMULA_OCR_BACKEND=none
 `APP_LANGUAGE` supports `ru` and `en`. The language can also be switched in the UI.
 `FORMULA_OCR_BACKEND=pix2tex` enables optional image formula OCR when `pix2tex` and its image dependencies are installed. Without it, image formulas are indexed as unresolved formula images.
 
+Optional formula OCR:
+
+```powershell
+python -m pip install -r requirements-formula-ocr.txt
+```
+
 ## Commands
 
 ```powershell
