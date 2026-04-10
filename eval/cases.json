@@ -1,0 +1,18 @@
+[
+  {
+    "query": "8580",
+    "expected_record_id": "t-2:r-2:c-1"
+  },
+  {
+    "query": "Н1.1",
+    "expected_record_id": "t-2:r-2:c-2"
+  },
+  {
+    "query": "N1.1",
+    "expected_record_id": "t-2:r-2:c-2"
+  },
+  {
+    "query": "47405",
+    "expected_record_id": "t-2:r-3:c-0"
+  }
+]

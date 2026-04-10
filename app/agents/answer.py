@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.retrieval.evidence import EvidenceReport
 from app.retrieval.exact import SearchResult
 
 
@@ -11,7 +12,12 @@ class AnswerContext:
     citations: list[dict[str, str | float]]
 
 
-def build_answer_context(question: str, results: list[SearchResult], max_results: int = 6) -> AnswerContext:
+def build_answer_context(
+    question: str,
+    results: list[SearchResult],
+    max_results: int = 6,
+    evidence: EvidenceReport | None = None,
+) -> AnswerContext:
     selected = results[:max_results]
     context_blocks: list[str] = []
     citations: list[dict[str, str | float]] = []
@@ -41,6 +47,7 @@ def build_answer_context(question: str, results: list[SearchResult], max_results
             }
         )
 
+    answer_mode = _select_answer_mode(results, evidence)
     prompt = "\n\n".join(
         [
             "You are a precise RAG answerer for corporate documents.",
@@ -48,6 +55,8 @@ def build_answer_context(question: str, results: list[SearchResult], max_results
             "If the context is insufficient, say that the answer was not found in the indexed documents.",
             "Keep exact codes, account numbers, regulatory references, and table values unchanged.",
             "Cite supporting context with bracket references like [1], [2].",
+            f"Answer mode: {answer_mode}.",
+            f"Evidence: {evidence.reason if evidence else 'not_checked'}.",
             "",
             f"Question: {question}",
             "",
@@ -59,3 +68,11 @@ def build_answer_context(question: str, results: list[SearchResult], max_results
     )
 
     return AnswerContext(prompt=prompt, citations=citations)
+
+
+def _select_answer_mode(results: list[SearchResult], evidence: EvidenceReport | None) -> str:
+    if evidence and not evidence.ok:
+        return "refuse_if_not_found"
+    if results and results[0].record.record_type in {"table_cell", "table_row"}:
+        return "extractive_table_answer"
+    return "grounded_summary"

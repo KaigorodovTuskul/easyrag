@@ -4,8 +4,11 @@ from app.agents.answer import build_answer_context
 from app.agents.controller import run_agent_retrieval
 from app.agents.embedding_indexer import build_embedding_index
 from app.core.config import AppConfig
+from app.eval.runner import run_eval
+from app.ingestion.batch import ingest_input_folder
 from app.providers.base import ProviderError
 from app.providers.router import ProviderRouter
+from app.retrieval.evidence import validate_evidence
 from app.retrieval.exact import search_exact
 from app.retrieval.hybrid import search_hybrid
 from app.retrieval.records import build_search_records
@@ -216,7 +219,9 @@ def _render_persistent_search(provider, selection) -> None:
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
     with st.expander("Answer generation", expanded=True):
-        answer_context = build_answer_context(query, results)
+        evidence = validate_evidence(results)
+        st.write({"evidence_ok": evidence.ok, "confidence": evidence.confidence, "reason": evidence.reason})
+        answer_context = build_answer_context(query, results, evidence=evidence)
         st.caption(f"Using model: {selection.chat_model}")
         st.json(answer_context.citations)
 
@@ -280,7 +285,14 @@ def _render_agent_search(provider, selection) -> None:
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
     with st.expander("Agent answer generation", expanded=True):
-        answer_context = build_answer_context(query, agent_result.results)
+        st.write(
+            {
+                "evidence_ok": agent_result.evidence.ok,
+                "confidence": agent_result.evidence.confidence,
+                "reason": agent_result.evidence.reason,
+            }
+        )
+        answer_context = build_answer_context(query, agent_result.results, evidence=agent_result.evidence)
         st.caption(f"Using model: {selection.chat_model}")
         st.json(answer_context.citations)
 
@@ -293,6 +305,34 @@ def _render_agent_search(provider, selection) -> None:
                 st.error(f"Answer generation failed: {exc}")
             else:
                 st.markdown(generated.text or "Empty answer returned by provider.")
+
+
+def _render_operations() -> None:
+    st.subheader("Index Operations")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Batch ingest input/*.docx"):
+            try:
+                results = ingest_input_folder()
+            except Exception as exc:
+                st.error(f"Batch ingest failed: {exc}")
+            else:
+                st.success(f"Ingested documents: {len(results)}")
+                st.dataframe([result.__dict__ for result in results], use_container_width=True, hide_index=True)
+
+    with col2:
+        if st.button("Run eval"):
+            try:
+                results = run_eval()
+            except Exception as exc:
+                st.error(f"Eval failed: {exc}")
+            else:
+                rows = [result.__dict__ for result in results]
+                hit_at_1 = sum(1 for result in results if result.hit_at_1)
+                hit_at_3 = sum(1 for result in results if result.hit_at_3)
+                st.write({"cases": len(results), "hit_at_1": hit_at_1, "hit_at_3": hit_at_3})
+                st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 def main() -> None:
@@ -333,6 +373,7 @@ def main() -> None:
         """
     )
 
+    _render_operations()
     _render_persistent_search(provider, selection)
     _render_agent_search(provider, selection)
     _render_docx_ingestion()

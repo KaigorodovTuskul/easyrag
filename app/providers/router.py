@@ -7,6 +7,9 @@ from app.providers.ollama import OllamaProvider
 from app.providers.openrouter import OpenRouterProvider
 
 
+_CACHED_SELECTION: tuple[BaseProvider, ProviderSelection] | None = None
+
+
 class ProviderRouter:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -14,10 +17,16 @@ class ProviderRouter:
         self.openrouter = OpenRouterProvider(config)
 
     def resolve(self) -> tuple[BaseProvider, ProviderSelection]:
+        global _CACHED_SELECTION
+        if _CACHED_SELECTION is not None:
+            return _CACHED_SELECTION
+
         try:
             selection = self.ollama.resolve_selection()
-            return self.ollama, selection
+            _CACHED_SELECTION = (self.ollama, selection)
+            return _CACHED_SELECTION
         except ProviderError as ollama_error:
             fallback = self.openrouter.resolve_selection()
             fallback.reason = f"Ollama unavailable: {ollama_error}. {fallback.reason}"
-            return self.openrouter, fallback
+            _CACHED_SELECTION = (self.openrouter, fallback)
+            return _CACHED_SELECTION

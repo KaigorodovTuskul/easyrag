@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.providers.base import BaseProvider
+from app.retrieval.evidence import EvidenceReport, validate_evidence
 from app.retrieval.exact import SearchResult, search_exact
 from app.retrieval.hybrid import HybridSearchTrace, search_hybrid
 from app.retrieval.records import SearchRecord
@@ -22,6 +23,7 @@ class AgentRetrievalResult:
     query_type: str
     mode: str
     results: list[SearchResult]
+    evidence: EvidenceReport
     steps: list[AgentStep] = field(default_factory=list)
 
 
@@ -50,12 +52,25 @@ def run_agent_retrieval(
             steps.append(AgentStep("rewrite_query", {"from": normalized_query, "to": rewritten}))
             results = _run_retrieval(provider, records, embedding_records, rewritten, embed_model, mode, limit, steps)
 
+    evidence = validate_evidence(results)
+    steps.append(
+        AgentStep(
+            "validate_evidence",
+            {
+                "ok": evidence.ok,
+                "confidence": evidence.confidence,
+                "reason": evidence.reason,
+                "top_score": evidence.top_score,
+            },
+        )
+    )
     steps.append(AgentStep("finalize", {"result_count": len(results)}))
     return AgentRetrievalResult(
         query=query,
         query_type=query_type,
         mode=mode,
         results=results,
+        evidence=evidence,
         steps=steps,
     )
 

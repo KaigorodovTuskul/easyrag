@@ -37,9 +37,10 @@ def _fuse_results(exact_results: list[SearchResult], vector_results: list[Search
 
     for rank, result in enumerate(exact_results, start=1):
         normalized_score = 1 / (rank + 5)
+        type_boost = _type_boost(result.record.record_type)
         by_id[result.record.record_id] = SearchResult(
             record=result.record,
-            score=result.score + normalized_score * 1000,
+            score=result.score + normalized_score * 1000 + type_boost,
             matched_terms=result.matched_terms,
             snippet=result.snippet,
         )
@@ -50,7 +51,7 @@ def _fuse_results(exact_results: list[SearchResult], vector_results: list[Search
         if existing is None:
             by_id[result.record.record_id] = SearchResult(
                 record=result.record,
-                score=normalized_score * 100,
+                score=normalized_score * 100 + _type_boost(result.record.record_type),
                 matched_terms=result.matched_terms,
                 snippet=result.snippet,
             )
@@ -62,3 +63,13 @@ def _fuse_results(exact_results: list[SearchResult], vector_results: list[Search
     results = list(by_id.values())
     results.sort(key=lambda result: result.score, reverse=True)
     return results
+
+
+def _type_boost(record_type: str) -> float:
+    if record_type == "table_cell":
+        return 30.0
+    if record_type == "table_row":
+        return 20.0
+    if record_type == "table":
+        return 5.0
+    return 0.0

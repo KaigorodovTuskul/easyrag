@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 
 
 DATA_ROOT = Path("data")
 DOCS_ROOT = DATA_ROOT / "docs"
 PARSED_ROOT = DATA_ROOT / "parsed"
+INPUT_ROOT = Path("input")
 
 
 def ensure_data_dirs() -> None:
@@ -29,3 +31,13 @@ def save_parsed_payload(filename: str, payload: dict) -> Path:
     target = PARSED_ROOT / f"{stem}.{timestamp}.json"
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return target
+
+
+def sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def list_input_docx() -> list[Path]:
+    if not INPUT_ROOT.exists():
+        return []
+    return sorted(INPUT_ROOT.glob("*.docx"))

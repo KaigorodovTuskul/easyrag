@@ -11,7 +11,7 @@ class OllamaProvider(BaseProvider):
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.client = HttpJsonClient(base_url=config.ollama_base_url)
+        self.client = HttpJsonClient(base_url=config.ollama_base_url, timeout=2.0)
 
     def list_models(self) -> list[ModelInfo]:
         payload = self.client.get_json(self.config.ollama_tags_path)
