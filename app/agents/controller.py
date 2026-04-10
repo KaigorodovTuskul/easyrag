@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from app.providers.base import BaseProvider
 from app.retrieval.evidence import EvidenceReport, validate_evidence
-from app.retrieval.exact import SearchResult, search_exact
+from app.retrieval.exact import SearchResult
 from app.retrieval.hybrid import HybridSearchTrace, search_hybrid
 from app.retrieval.records import SearchRecord
 from app.retrieval.vector import EmbeddingRecord
@@ -44,7 +44,8 @@ def run_agent_retrieval(
     if normalized_query != query:
         steps.append(AgentStep("normalize_query", {"from": query, "to": normalized_query}))
 
-    results = _run_retrieval(provider, records, embedding_records, normalized_query, embed_model, mode, limit, steps)
+    candidate_records, candidate_embeddings = _filter_candidates(records, embedding_records, normalized_query, query_type, steps)
+    results = _run_retrieval(provider, candidate_records, candidate_embeddings, normalized_query, embed_model, mode, limit, steps)
     results = _expand_table_context(records, results)
     results = _expand_paragraph_context(records, results, normalized_query)
 
@@ -52,7 +53,8 @@ def run_agent_retrieval(
         rewritten = rewrite_query(normalized_query)
         if rewritten != normalized_query:
             steps.append(AgentStep("rewrite_query", {"from": normalized_query, "to": rewritten}))
-            results = _run_retrieval(provider, records, embedding_records, rewritten, embed_model, mode, limit, steps)
+            candidate_records, candidate_embeddings = _filter_candidates(records, embedding_records, rewritten, query_type, steps)
+            results = _run_retrieval(provider, candidate_records, candidate_embeddings, rewritten, embed_model, mode, limit, steps)
             results = _expand_table_context(records, results)
             results = _expand_paragraph_context(records, results, rewritten)
 
@@ -144,17 +146,101 @@ def _run_retrieval(
         steps.append(AgentStep("search_hybrid", _hybrid_trace_to_dict(trace)))
         return results
 
-    results = search_exact(records, query=query, limit=limit)
-    steps.append(AgentStep("search_exact", {"result_count": len(results)}))
+    results, trace = search_hybrid(records, embedding_records, query=query, query_vector=[], limit=limit)
+    steps.append(AgentStep("search_lexical", _hybrid_trace_to_dict(trace)))
     return results
 
 
 def _hybrid_trace_to_dict(trace: HybridSearchTrace) -> dict[str, int]:
     return {
         "exact_count": trace.exact_count,
+        "bm25_count": trace.bm25_count,
         "vector_count": trace.vector_count,
         "fused_count": trace.fused_count,
     }
+
+
+def _filter_candidates(
+    records: list[SearchRecord],
+    embedding_records: list[EmbeddingRecord],
+    query: str,
+    query_type: str,
+    steps: list[AgentStep],
+) -> tuple[list[SearchRecord], list[EmbeddingRecord]]:
+    target = _extract_target(query)
+    table_intent = _has_table_intent(query)
+
+    if not target and not table_intent:
+        steps.append(AgentStep("filter_candidates", {"applied": False, "reason": "no_filter_target"}))
+        return records, embedding_records
+
+    candidates = records
+    filters: list[str] = []
+
+    if target:
+        target_candidates = _filter_by_target(records, target)
+        if target_candidates:
+            candidates = target_candidates
+            filters.append(f"target:{target}")
+
+    if table_intent:
+        table_candidates = [record for record in candidates if record.record_type in {"table", "table_row", "table_cell"}]
+        if table_candidates:
+            candidates = table_candidates
+            filters.append("record_type:table")
+
+    if not filters:
+        steps.append(AgentStep("filter_candidates", {"applied": False, "reason": "no_matches"}))
+        return records, embedding_records
+
+    candidate_ids = {record.record_id for record in candidates}
+    filtered_embeddings = [item for item in embedding_records if item.record.record_id in candidate_ids]
+    steps.append(
+        AgentStep(
+            "filter_candidates",
+            {
+                "applied": True,
+                "filters": ", ".join(filters),
+                "records_before": len(records),
+                "records_after": len(candidates),
+                "embeddings_after": len(filtered_embeddings),
+            },
+        )
+    )
+    return candidates, filtered_embeddings
+
+
+def _extract_target(query: str) -> str | None:
+    norm_match = re.search(r"\b[НN]\s*\d+(?:\.\d+)?\b", query, flags=re.IGNORECASE)
+    if norm_match:
+        return norm_match.group(0).replace(" ", "")
+
+    code_match = re.search(r"\b\d{3,}(?:\.\d+)?\b", query)
+    if code_match:
+        return code_match.group(0)
+
+    return None
+
+
+def _filter_by_target(records: list[SearchRecord], target: str) -> list[SearchRecord]:
+    normalized_target = _normalize_target(target)
+    return [
+        record
+        for record in records
+        if normalized_target in _normalize_target(f"{record.text} {' '.join(record.section_path)}")
+    ]
+
+
+def _normalize_target(value: str) -> str:
+    normalized = value.lower().replace("\u0451", "\u0435")
+    normalized = re.sub(r"\bн(?=\d)", "n", normalized)
+    normalized = re.sub(r"\s+", "", normalized)
+    return normalized
+
+
+def _has_table_intent(query: str) -> bool:
+    normalized = query.lower().replace("\u0451", "\u0435")
+    return any(term in normalized for term in ["код", "счет", "таблиц", "строк", "столб", "table", "code", "account", "row", "column"])
 
 
 def _expand_table_context(records: list[SearchRecord], results: list[SearchResult]) -> list[SearchResult]:

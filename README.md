@@ -3,7 +3,7 @@
 Local-first agentic RAG for DOCX documents.
 
 <p>
-  <b>Exact search</b> + <b>hybrid retrieval</b> + <b>Ollama/OpenRouter routing</b> + <b>Streamlit chat UI</b>
+  <b>Exact search</b> + <b>BM25</b> + <b>hybrid retrieval</b> + <b>Ollama/OpenRouter routing</b> + <b>Streamlit chat UI</b>
 </p>
 
 ## Demo
@@ -14,7 +14,7 @@ Local-first agentic RAG for DOCX documents.
 
 EasyRAG builds a local workspace for one uploaded DOCX document, caches parsed fragments and embeddings, then lets the user ask questions in a chat interface.
 
-RU: локальный RAG для DOCX-документов с кэшем базы, точным поиском, hybrid retrieval и чат-интерфейсом.
+RU: локальный RAG для DOCX-документов с кэшем базы, exact/BM25/hybrid retrieval и чат-интерфейсом.
 
 ## Setup: Portable Python
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.retrieval.bm25 import search_bm25
 from app.retrieval.exact import SearchResult, search_exact
 from app.retrieval.records import SearchRecord
 from app.retrieval.vector import EmbeddingRecord, search_vector
@@ -10,6 +11,7 @@ from app.retrieval.vector import EmbeddingRecord, search_vector
 @dataclass(slots=True)
 class HybridSearchTrace:
     exact_count: int
+    bm25_count: int
     vector_count: int
     fused_count: int
 
@@ -22,17 +24,23 @@ def search_hybrid(
     limit: int = 20,
 ) -> tuple[list[SearchResult], HybridSearchTrace]:
     exact_results = search_exact(records, query=query, limit=limit)
+    bm25_results = search_bm25(records, query=query, limit=limit)
     vector_results = search_vector(embedding_records, query_vector or [], limit=limit)
-    fused = _fuse_results(exact_results, vector_results)
+    fused = _fuse_results(exact_results, bm25_results, vector_results)
 
     return fused[:limit], HybridSearchTrace(
         exact_count=len(exact_results),
+        bm25_count=len(bm25_results),
         vector_count=len(vector_results),
         fused_count=len(fused),
     )
 
 
-def _fuse_results(exact_results: list[SearchResult], vector_results: list[SearchResult]) -> list[SearchResult]:
+def _fuse_results(
+    exact_results: list[SearchResult],
+    bm25_results: list[SearchResult],
+    vector_results: list[SearchResult],
+) -> list[SearchResult]:
     by_id: dict[str, SearchResult] = {}
 
     for rank, result in enumerate(exact_results, start=1):
@@ -44,6 +52,21 @@ def _fuse_results(exact_results: list[SearchResult], vector_results: list[Search
             matched_terms=result.matched_terms,
             snippet=result.snippet,
         )
+
+    for rank, result in enumerate(bm25_results, start=1):
+        normalized_score = 1 / (rank + 10)
+        existing = by_id.get(result.record.record_id)
+        if existing is None:
+            by_id[result.record.record_id] = SearchResult(
+                record=result.record,
+                score=normalized_score * 350 + result.score * 20 + _type_boost(result.record.record_type),
+                matched_terms=result.matched_terms,
+                snippet=result.snippet,
+            )
+            continue
+
+        existing.score += normalized_score * 350 + result.score * 20
+        existing.matched_terms = list(dict.fromkeys([*existing.matched_terms, *result.matched_terms]))
 
     for rank, result in enumerate(vector_results, start=1):
         normalized_score = 1 / (rank + 20)
