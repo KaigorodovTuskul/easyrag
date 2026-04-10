@@ -215,6 +215,10 @@ def _extract_target(query: str) -> str | None:
     if norm_match:
         return norm_match.group(0).replace(" ", "")
 
+    named_norm = _extract_named_norm_target(query)
+    if named_norm:
+        return named_norm
+
     code_match = re.search(r"\b\d{3,}(?:\.\d+)?\b", query)
     if code_match:
         return code_match.group(0)
@@ -227,7 +231,7 @@ def _filter_by_target(records: list[SearchRecord], target: str) -> list[SearchRe
     return [
         record
         for record in records
-        if normalized_target in _normalize_target(f"{record.text} {' '.join(record.section_path)}")
+        if _target_matches(_normalize_target(f"{record.text} {' '.join(record.section_path)}"), normalized_target)
     ]
 
 
@@ -236,6 +240,23 @@ def _normalize_target(value: str) -> str:
     normalized = re.sub(r"\bн(?=\d)", "n", normalized)
     normalized = re.sub(r"\s+", "", normalized)
     return normalized
+
+
+def _target_matches(text: str, target: str) -> bool:
+    if re.fullmatch(r"n\d+(?:\.\d+)?", target):
+        return re.search(rf"(?<![a-z0-9]){re.escape(target)}(?![\d\.])", text) is not None
+    return target in text
+
+
+def _extract_named_norm_target(query: str) -> str | None:
+    normalized = query.lower().replace("\u0451", "\u0435")
+    if "краткосрочн" in normalized and "ликвидност" in normalized:
+        return "Н2"
+    if "текущ" in normalized and "ликвидност" in normalized:
+        return "Н3"
+    if "мгновенн" in normalized and "ликвидност" in normalized:
+        return "Н2"
+    return None
 
 
 def _has_table_intent(query: str) -> bool:

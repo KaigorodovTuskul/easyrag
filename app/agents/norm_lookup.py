@@ -18,11 +18,11 @@ def try_build_norm_lookup_answer(query: str, results: list[SearchResult], langua
     if not target:
         return None
 
-    normalized_target = normalize_text(target)
+    normalized_target = _normalize_norm_target(target)
     relevant = [
         result
         for result in results
-        if result.record.record_type == "paragraph" and normalized_target in normalize_text(result.record.text)
+        if result.record.record_type == "paragraph" and _norm_target_matches(normalize_text(result.record.text), normalized_target)
     ]
     if not relevant:
         return None
@@ -60,9 +60,27 @@ def try_build_norm_lookup_answer(query: str, results: list[SearchResult], langua
 
 def extract_norm_target(query: str) -> str | None:
     match = re.search(r"\b[НN]\s*\d+(?:\.\d+)?\b", query, flags=re.IGNORECASE)
-    if not match:
-        return None
-    return match.group(0).replace(" ", "").upper().replace("N", "Н")
+    if match:
+        return match.group(0).replace(" ", "").upper().replace("N", "Н")
+
+    normalized = normalize_text(query)
+    if "краткосрочн" in normalized and "ликвидност" in normalized:
+        return "Н2"
+    if "мгновенн" in normalized and "ликвидност" in normalized:
+        return "Н2"
+    if "текущ" in normalized and "ликвидност" in normalized:
+        return "Н3"
+    return None
+
+
+def _normalize_norm_target(target: str) -> str:
+    return normalize_text(target).replace(" ", "")
+
+
+def _norm_target_matches(text: str, target: str) -> bool:
+    if re.fullmatch(r"n\d+(?:\.\d+)?", target):
+        return re.search(rf"(?<![a-z0-9]){re.escape(target)}(?![\d\.])", text) is not None
+    return target in text
 
 
 def _dedupe_paragraphs(results: list[SearchResult]) -> list[SearchResult]:
