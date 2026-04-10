@@ -14,7 +14,7 @@ class CodeLookupAnswer:
     confidence: str
 
 
-def try_build_code_lookup_answer(query: str, results: list[SearchResult]) -> CodeLookupAnswer | None:
+def try_build_code_lookup_answer(query: str, results: list[SearchResult], language: str = "ru") -> CodeLookupAnswer | None:
     target_code = extract_code_target(query)
     if not target_code:
         return None
@@ -28,17 +28,17 @@ def try_build_code_lookup_answer(query: str, results: list[SearchResult]) -> Cod
         return None
 
     answer_lines = [
-        f"Код {target_code}: {row.get('content', 'описание не найдено')}",
+        _format_code_line(target_code, row.get("content", ""), language),
     ]
 
     normatives = row.get("normatives")
     if normatives:
-        answer_lines.append(f"Используется при расчете: {normatives}")
+        answer_lines.append(_format_normatives_line(normatives, language))
 
     if _asks_calculation(query):
-        answer_lines.append("Отдельная формула расчета в найденной строке таблицы не приведена.")
+        answer_lines.append(_format_missing_formula_line(language))
 
-    answer_lines.append(f"Источник: {row_result.record.source_name}, {row_result.record.record_id}.")
+    answer_lines.append(_format_source_line(row_result.record.source_name, row_result.record.record_id, language))
 
     return CodeLookupAnswer(
         target_code=target_code,
@@ -86,4 +86,40 @@ def _parse_code_row(row_text: str) -> dict[str, str] | None:
 
 def _asks_calculation(query: str) -> bool:
     normalized = normalize_text(query)
-    return any(term in normalized for term in ["рассчитывается", "расчет", "рассчитать", "как считается"])
+    return any(
+        term in normalized
+        for term in [
+            "рассчитывается",
+            "расчет",
+            "рассчитать",
+            "как считается",
+            "calculated",
+            "calculation",
+            "calculate",
+            "how is",
+        ]
+    )
+
+
+def _format_code_line(target_code: str, content: str, language: str) -> str:
+    if language == "en":
+        return f"Code {target_code}: {content or 'description not found'}"
+    return f"Код {target_code}: {content or 'описание не найдено'}"
+
+
+def _format_normatives_line(normatives: str, language: str) -> str:
+    if language == "en":
+        return f"Used in calculation: {normatives}"
+    return f"Используется при расчете: {normatives}"
+
+
+def _format_missing_formula_line(language: str) -> str:
+    if language == "en":
+        return "A separate calculation formula is not provided in the matched table row."
+    return "Отдельная формула расчета в найденной строке таблицы не приведена."
+
+
+def _format_source_line(source_name: str, record_id: str, language: str) -> str:
+    if language == "en":
+        return f"Source: {source_name}, {record_id}."
+    return f"Источник: {source_name}, {record_id}."

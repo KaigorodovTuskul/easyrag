@@ -10,6 +10,7 @@ from app.agents.controller import run_agent_retrieval
 from app.agents.embedding_indexer import build_embedding_index
 from app.agents.norm_lookup import try_build_norm_lookup_answer
 from app.core.config import AppConfig
+from app.core.i18n import SUPPORTED_LANGUAGES, normalize_language, t
 from app.eval.runner import run_eval
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.ollama import OllamaProvider
@@ -40,28 +41,44 @@ def main() -> None:
     st.set_page_config(page_title="EasyRAG", layout="wide")
 
     config = AppConfig.load()
-    provider, selection = _render_provider_settings(config)
-    workspace_id = _render_sidebar_workspace(provider, selection)
+    language = _render_language_settings(config)
+    provider, selection = _render_provider_settings(config, language)
+    workspace_id = _render_sidebar_workspace(provider, selection, language)
 
     st.title("EasyRAG")
-    st.caption("Чат по выбранному DOCX-документу")
+    st.caption(t("app.caption", language))
 
-    _render_chat(provider, selection.chat_model, selection.embed_model, workspace_id)
+    _render_chat(provider, selection.chat_model, selection.embed_model, workspace_id, language)
 
 
-def _render_provider_settings(config: AppConfig):
-    st.sidebar.header("Модель")
-    mode = st.sidebar.radio("Провайдер", ["auto", "ollama", "openrouter"], horizontal=True)
+def _render_language_settings(config: AppConfig) -> str:
+    configured = normalize_language(st.session_state.get("language") or config.app_language)
+    st.sidebar.header(t("language.header", configured))
+    labels = {"ru": "RU", "en": "EN"}
+    selected = st.sidebar.radio(
+        t("language.label", configured),
+        list(SUPPORTED_LANGUAGES),
+        index=list(SUPPORTED_LANGUAGES).index(configured),
+        format_func=lambda value: labels[value],
+        horizontal=True,
+    )
+    st.session_state["language"] = selected
+    return selected
 
-    provider, selection = _resolve_provider(config, mode)
+
+def _render_provider_settings(config: AppConfig, language: str):
+    st.sidebar.header(t("model.header", language))
+    mode = st.sidebar.radio(t("provider.label", language), ["auto", "ollama", "openrouter"], horizontal=True)
+
+    provider, selection = _resolve_provider(config, mode, language)
     available_model_names = [model.name for model in selection.available_models]
 
     chat_options = _model_options(available_model_names, selection.chat_model)
     embed_options = _model_options(available_model_names, selection.embed_model)
-    selection.chat_model = st.sidebar.selectbox("Модель ответа", chat_options, index=chat_options.index(selection.chat_model))
-    selection.embed_model = st.sidebar.selectbox("Модель embeddings", embed_options, index=embed_options.index(selection.embed_model))
+    selection.chat_model = st.sidebar.selectbox(t("chat_model.label", language), chat_options, index=chat_options.index(selection.chat_model))
+    selection.embed_model = st.sidebar.selectbox(t("embed_model.label", language), embed_options, index=embed_options.index(selection.embed_model))
 
-    with st.sidebar.expander("Статус провайдера"):
+    with st.sidebar.expander(t("provider_status.title", language)):
         st.write(
             {
                 "provider": provider.name,
@@ -74,13 +91,13 @@ def _render_provider_settings(config: AppConfig):
     return provider, selection
 
 
-def _resolve_provider(config: AppConfig, mode: str) -> tuple[BaseProvider, object]:
+def _resolve_provider(config: AppConfig, mode: str, language: str | None = None) -> tuple[BaseProvider, object]:
     if mode == "ollama":
         provider = OllamaProvider(config)
         try:
             return provider, provider.resolve_selection()
         except ProviderError as exc:
-            st.sidebar.warning(f"Ollama недоступна: {exc}")
+            st.sidebar.warning(t("ollama_unavailable", normalize_language(language), error=exc))
             fallback = OpenRouterProvider(config)
             return fallback, fallback.resolve_selection()
 
@@ -97,33 +114,33 @@ def _model_options(available: list[str], current: str) -> list[str]:
     return options
 
 
-def _render_sidebar_workspace(provider, selection) -> str | None:
-    st.sidebar.header("Документ")
+def _render_sidebar_workspace(provider, selection, language: str) -> str | None:
+    st.sidebar.header(t("document.header", language))
     workspaces = list_workspaces()
     selected_workspace_id = st.session_state.get("workspace_id")
 
     if workspaces:
-        labels = [_workspace_label(item) for item in workspaces]
+        labels = [_workspace_label(item, language) for item in workspaces]
         ids = [item.workspace_id for item in workspaces]
         selected_index = ids.index(selected_workspace_id) if selected_workspace_id in ids else 0
-        selected_label = st.sidebar.selectbox("Готовая база", labels, index=selected_index)
+        selected_label = st.sidebar.selectbox(t("workspace.select", language), labels, index=selected_index)
         selected_workspace_id = ids[labels.index(selected_label)]
         _set_workspace(selected_workspace_id)
     else:
-        st.sidebar.info("Готовых баз пока нет.")
+        st.sidebar.info(t("workspace.empty", language))
 
-    uploaded_file = st.sidebar.file_uploader("Загрузить DOCX", type=["docx"])
+    uploaded_file = st.sidebar.file_uploader(t("upload.label", language), type=["docx"])
     if uploaded_file is not None:
-        selected_workspace_id = _prepare_uploaded_workspace(uploaded_file, provider, selection)
+        selected_workspace_id = _prepare_uploaded_workspace(uploaded_file, provider, selection, language)
         _set_workspace(selected_workspace_id)
 
     if selected_workspace_id:
-        _render_workspace_summary(selected_workspace_id)
-        if st.sidebar.button("Очистить диалог"):
+        _render_workspace_summary(selected_workspace_id, language)
+        if st.sidebar.button(t("clear_chat", language)):
             _clear_chat_context(selected_workspace_id)
             st.rerun()
 
-    _render_debug(provider.name, selection, selected_workspace_id)
+    _render_debug(provider.name, selection, selected_workspace_id, language)
     return selected_workspace_id
 
 
@@ -138,19 +155,19 @@ def _set_workspace(workspace_id: str) -> None:
     st.session_state.pop("last_effective_query", None)
 
 
-def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str | None) -> None:
+def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str | None, language: str) -> None:
     if "messages" not in st.session_state:
         st.session_state["messages"] = load_conversation(workspace_id) if workspace_id else []
 
     if not workspace_id:
-        st.info("Загрузите DOCX или выберите готовую базу в левой панели.")
+        st.info(t("no_workspace", language))
         return
 
     for message in st.session_state["messages"]:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    prompt = st.chat_input("Напишите вопрос по документу")
+    prompt = st.chat_input(t("chat.placeholder", language))
     if not prompt:
         return
 
@@ -161,14 +178,14 @@ def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str 
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        answer = _answer_question(provider, chat_model, embed_model, workspace_id, prompt)
+        answer = _answer_question(provider, chat_model, embed_model, workspace_id, prompt, language)
         st.write_stream(_stream_text(answer))
 
     st.session_state["messages"].append({"role": "assistant", "content": answer})
     save_conversation(workspace_id, st.session_state["messages"])
 
 
-def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: str, prompt: str) -> str:
+def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: str, prompt: str, language: str) -> str:
     records = load_workspace_records(workspace_id)
     embeddings = load_workspace_embeddings(workspace_id)
     effective_query = _build_effective_query(prompt)
@@ -195,29 +212,29 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     }
 
     if not agent_result.results:
-        return "Не нашел подходящий фрагмент в выбранном документе. Попробуйте точный код, номер счета или другую формулировку."
+        return t("no_results", language)
 
-    code_answer = try_build_code_lookup_answer(effective_query, agent_result.results)
+    code_answer = try_build_code_lookup_answer(effective_query, agent_result.results, language=language)
     if code_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
         return code_answer.answer
 
-    norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results)
+    norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results, language=language)
     if norm_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
         return norm_answer.answer
 
-    answer_context = build_answer_context(effective_query, agent_result.results, evidence=agent_result.evidence)
+    answer_context = build_answer_context(effective_query, agent_result.results, evidence=agent_result.evidence, language=language)
     st.session_state["last_debug"]["citations"] = answer_context.citations
 
     try:
         generated = provider.generate(answer_context.prompt, model=chat_model)
     except ProviderError as exc:
-        return f"Нашел контекст, но модель ответа недоступна: {exc}"
+        return t("model_unavailable", language, error=exc)
     except Exception as exc:
-        return f"Нашел контекст, но не смог сформировать ответ: {exc}"
+        return t("answer_failed", language, error=exc)
 
-    return generated.text or "Модель вернула пустой ответ."
+    return generated.text or t("empty_answer", language)
 
 
 def _build_effective_query(prompt: str) -> str:
@@ -233,7 +250,7 @@ def _build_effective_query(prompt: str) -> str:
         return prompt
 
     st.session_state["last_user_query"] = previous_user_message
-    return f"{previous_user_message}\nУточнение: {prompt}"
+    return f"{previous_user_message}\n{t('clarification.prefix', st.session_state.get('language', 'ru'))}: {prompt}"
 
 
 def _previous_user_message() -> str | None:
@@ -267,11 +284,11 @@ def _clear_chat_context(workspace_id: str) -> None:
         st.session_state.pop(key, None)
 
 
-def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
+def _prepare_uploaded_workspace(uploaded_file, provider, selection, language: str) -> str:
     try:
         from app.ingestion.docx_parser import parse_docx_bytes
     except ImportError:
-        st.sidebar.error("Не установлены зависимости для DOCX. Запустите bootstrap_env.bat.")
+        st.sidebar.error(t("docx_deps_missing", language))
         return st.session_state.get("workspace_id")
 
     content = uploaded_file.getvalue()
@@ -280,35 +297,35 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
     info = load_workspace_info(workspace_id)
 
     if info and info.embedding_count > 0 and info.embed_model == selection.embed_model:
-        st.sidebar.success("База уже готова. Открываю из кэша.")
+        st.sidebar.success(t("workspace_cached", language))
         return workspace_id
 
-    st.sidebar.info("Готовлю базу. Это нужно сделать один раз для документа.")
-    parse_progress = st.sidebar.progress(0, text="Индексация документа...")
+    st.sidebar.info(t("workspace_preparing", language))
+    parse_progress = st.sidebar.progress(0, text=t("indexing.progress", language))
 
     parsed = parse_docx_bytes(uploaded_file.name, content)
     save_uploaded_docx(uploaded_file.name, content)
     save_parsed_payload(uploaded_file.name, parsed.to_dict())
     records = build_search_records(parsed)
     save_workspace_records(workspace_id, parsed.source_name, file_hash, records)
-    parse_progress.progress(1.0, text=f"Индексация готова: {len(records)} фрагментов, ~{_records_tokens(records)} токенов")
+    parse_progress.progress(1.0, text=t("indexing.done", language, records=len(records), tokens=_records_tokens(records)))
 
-    _build_workspace_embeddings(workspace_id, provider, selection, records)
+    _build_workspace_embeddings(workspace_id, provider, selection, records, language)
     st.session_state["messages"] = []
     save_conversation(workspace_id, [])
     return workspace_id
 
 
-def _build_workspace_embeddings(workspace_id: str, provider, selection, records: list[SearchRecord]) -> None:
+def _build_workspace_embeddings(workspace_id: str, provider, selection, records: list[SearchRecord], language: str) -> None:
     info = load_workspace_info(workspace_id)
     if info and info.embedding_count > 0 and info.embed_model == selection.embed_model:
-        st.sidebar.success("Embeddings уже есть. Повторно не считаю.")
+        st.sidebar.success(t("embeddings.cached", language))
         return
 
     selected = [record for record in records if record.record_type != "table" and record.text.strip()]
     total_records = len(selected)
     total_tokens = sum(estimate_tokens(record.text) for record in selected)
-    progress = st.sidebar.progress(0, text=f"Embeddings: 0/{total_records}, ~0/{total_tokens} токенов")
+    progress = st.sidebar.progress(0, text=t("embeddings.progress", language, index=0, total=total_records, processed=0, tokens=total_tokens))
     log_box = st.sidebar.empty()
     log_lines: list[str] = []
     processed_tokens = 0
@@ -316,7 +333,10 @@ def _build_workspace_embeddings(workspace_id: str, provider, selection, records:
     def on_progress(index: int, total: int, record: SearchRecord, token_count: int) -> None:
         nonlocal processed_tokens
         processed_tokens += token_count
-        progress.progress(index / max(total, 1), text=f"Embeddings: {index}/{total}, ~{processed_tokens}/{total_tokens} токенов")
+        progress.progress(
+            index / max(total, 1),
+            text=t("embeddings.progress", language, index=index, total=total, processed=processed_tokens, tokens=total_tokens),
+        )
         log_lines.append(f"{index}/{total}: {record.record_id} ({record.record_type}), ~{token_count} tokens")
         log_box.code("\n".join(log_lines[-8:]), language="text")
 
@@ -329,27 +349,27 @@ def _build_workspace_embeddings(workspace_id: str, provider, selection, records:
         )
         save_workspace_embeddings(workspace_id, embeddings, selection.embed_model)
     except Exception as exc:
-        st.sidebar.warning(f"Exact-поиск готов, но embeddings не построены: {exc}")
+        st.sidebar.warning(t("embeddings.failed", language, error=exc))
         return
 
-    st.sidebar.success(f"Embeddings готовы: {len(embeddings)} фрагментов, примерно {processed_tokens} токенов.")
+    st.sidebar.success(t("embeddings.done", language, records=len(embeddings), tokens=processed_tokens))
 
 
-def _render_workspace_summary(workspace_id: str) -> None:
+def _render_workspace_summary(workspace_id: str, language: str) -> None:
     info = load_workspace_info(workspace_id)
     if info is None:
         return
-    st.sidebar.caption(f"Текущая база: {info.source_name}")
-    st.sidebar.caption(f"Фрагментов: {info.record_count}; embeddings: {info.embedding_count}")
+    st.sidebar.caption(t("workspace.current", language, source=info.source_name))
+    st.sidebar.caption(t("workspace.stats", language, records=info.record_count, embeddings=info.embedding_count))
 
 
-def _render_debug(provider_name: str, selection, workspace_id: str | None) -> None:
-    with st.sidebar.expander("Отладка"):
+def _render_debug(provider_name: str, selection, workspace_id: str | None, language: str) -> None:
+    with st.sidebar.expander(t("debug.title", language)):
         info = load_workspace_info(workspace_id) if workspace_id else None
-        st.write("Текущая база")
+        st.write(t("debug.workspace", language))
         st.json(asdict(info) if info else {})
 
-        st.write("Модели")
+        st.write(t("debug.models", language))
         st.json(
             {
                 "provider": provider_name,
@@ -360,24 +380,24 @@ def _render_debug(provider_name: str, selection, workspace_id: str | None) -> No
             }
         )
 
-        st.write("Последний запрос")
+        st.write(t("debug.last_query", language))
         st.json(st.session_state.get("last_debug", {}))
 
-        if st.button("Запустить проверку качества"):
+        if st.button(t("debug.run_eval", language)):
             try:
                 results = run_eval()
             except Exception as exc:
-                st.error(f"Проверка не запустилась: {exc}")
+                st.error(t("debug.eval_failed", language, error=exc))
                 return
             hit_at_1 = sum(1 for result in results if result.hit_at_1)
             hit_at_3 = sum(1 for result in results if result.hit_at_3)
-            st.write({"кейсов": len(results), "hit@1": hit_at_1, "hit@3": hit_at_3})
+            st.write({t("debug.cases", language): len(results), "hit@1": hit_at_1, "hit@3": hit_at_3})
             st.dataframe([asdict(result) for result in results], use_container_width=True, hide_index=True)
 
 
-def _workspace_label(info) -> str:
-    embed_status = "embeddings есть" if info.embedding_count else "только exact"
-    return f"{info.source_name} | {info.record_count} фрагм. | {embed_status}"
+def _workspace_label(info, language: str) -> str:
+    embed_status = t("workspace.embeddings_ready", language) if info.embedding_count else t("workspace.exact_only", language)
+    return f"{info.source_name} | {info.record_count} {t('workspace.fragments_short', language)} | {embed_status}"
 
 
 def _records_tokens(records: list[SearchRecord]) -> int:

@@ -18,6 +18,7 @@ class AppConfig:
     app_env: str
     app_host: str
     app_port: int
+    app_language: str
     llm_provider: str
     ollama_base_url: str
     ollama_default_model: str
@@ -44,6 +45,7 @@ class AppConfig:
             app_env=merged.get("APP_ENV", "dev"),
             app_host=merged.get("APP_HOST", "0.0.0.0"),
             app_port=int(merged.get("APP_PORT", "8501")),
+            app_language=merged.get("APP_LANGUAGE", "ru").lower(),
             llm_provider=merged.get("LLM_PROVIDER", "openrouter"),
             ollama_base_url=merged.get("OLLAMA_BASE_URL", "http://10.32.2.36:11434").rstrip("/"),
             ollama_default_model=merged.get("OLLAMA_DEFAULT_MODEL", "gemma4:26b"),

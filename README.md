@@ -1,28 +1,46 @@
 # EasyRAG
 
-MVP agentic RAG for local DOCX search.
+Local-first agentic RAG for DOCX documents.
 
-## Features
+<p>
+  <b>Exact search</b> + <b>hybrid retrieval</b> + <b>Ollama/OpenRouter routing</b> + <b>Streamlit chat UI</b>
+</p>
 
-- DOCX upload and local workspace cache
-- exact + hybrid retrieval
-- Ollama-first routing, OpenRouter fallback
-- Ollama models from `/api/tags`, active model from `/api/ps`
-- Streamlit chat UI
+## Overview
 
-## Setup
+EasyRAG builds a local workspace for one uploaded DOCX document, caches parsed fragments and embeddings, then lets the user ask questions in a chat interface.
+
+RU: локальный RAG для DOCX-документов с кэшем базы, точным поиском, hybrid retrieval и чат-интерфейсом.
+
+## Setup: Portable Python
 
 1. Run `bootstrap_env.bat`
 2. Create `.env`
-3. Start app with `start_app.bat`
+3. Set `OLLAMA_BASE_URL` for Ollama
+4. If you use OpenRouter fallback, fill `OPENROUTER_API_KEY`
+5. Start with `start_app.bat`
+
+## Setup: venv
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+powershell -ExecutionPolicy Bypass -File scripts\run_streamlit.ps1
+```
+
+## Setup: System Python
+
+```powershell
+python -m pip install -r requirements.txt
+powershell -ExecutionPolicy Bypass -File scripts\run_streamlit.ps1
+```
 
 ## `.env`
 
-For Ollama, set your local Ollama endpoint in `OLLAMA_BASE_URL`.
-
-For OpenRouter fallback, fill `OPENROUTER_API_KEY`.
-
 ```env
+APP_LANGUAGE=ru
+
 OLLAMA_BASE_URL=http://10.32.2.36:11434
 OLLAMA_DEFAULT_MODEL=gemma4:26b
 OLLAMA_DEFAULT_EMBED_MODEL=qwen3-embedding:8b
@@ -33,6 +51,8 @@ OPENROUTER_API_KEY=
 OPENROUTER_MODEL=google/gemma-4-26b-a4b-it
 OPENROUTER_EMBED_MODEL=qwen/qwen3-embedding-8b
 ```
+
+`APP_LANGUAGE` supports `ru` and `en`. The language can also be switched in the UI.
 
 ## Commands
 

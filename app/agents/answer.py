@@ -17,6 +17,7 @@ def build_answer_context(
     results: list[SearchResult],
     max_results: int = 6,
     evidence: EvidenceReport | None = None,
+    language: str = "ru",
 ) -> AnswerContext:
     selected = results[:max_results]
     context_blocks: list[str] = []
@@ -48,6 +49,7 @@ def build_answer_context(
         )
 
     answer_mode = _select_answer_mode(results, evidence)
+    answer_language = "Russian" if language == "ru" else "English"
     prompt = "\n\n".join(
         [
             "You are a precise RAG answerer for corporate documents.",
@@ -63,7 +65,7 @@ def build_answer_context(
             "Context:",
             "\n\n".join(context_blocks) if context_blocks else "No context found.",
             "",
-            "Answer in Russian.",
+            f"Answer in {answer_language}.",
         ]
     )
 

@@ -13,7 +13,7 @@ class NormLookupAnswer:
     confidence: str
 
 
-def try_build_norm_lookup_answer(query: str, results: list[SearchResult]) -> NormLookupAnswer | None:
+def try_build_norm_lookup_answer(query: str, results: list[SearchResult], language: str = "ru") -> NormLookupAnswer | None:
     target = extract_norm_target(query)
     if not target:
         return None
@@ -34,30 +34,26 @@ def try_build_norm_lookup_answer(query: str, results: list[SearchResult]) -> Nor
     if _asks_table(query):
         return NormLookupAnswer(
             target_norm=target,
-            answer=_build_component_table_answer(target, paragraphs),
+            answer=_build_component_table_answer(target, paragraphs, language),
             confidence="medium",
         )
 
     if _asks_simple(query):
         return NormLookupAnswer(
             target_norm=target,
-            answer=_build_simple_answer(target, paragraphs),
+            answer=_build_simple_answer(target, paragraphs, language),
             confidence="medium",
         )
 
     lines = [
-        f"{target}: найдено описание расчета в тексте документа.",
+        _found_norm_line(target, language),
         text,
     ]
 
     if "по формуле" in normalize_text(text):
-        lines.append(
-            "Важно: сама формула в этом DOCX, вероятно, вставлена как изображение/объект Word. "
-            "Текущий текстовый индекс извлек окружающий текст, но не распознал изображение формулы. "
-            "Для точного извлечения самой дроби нужно добавить OCR/извлечение формул из изображений."
-        )
+        lines.append(_formula_image_note(language))
 
-    lines.append(f"Источник: {paragraphs[0].record.source_name}, {paragraphs[0].record.record_id}.")
+    lines.append(_source_line(paragraphs[0].record.source_name, paragraphs[0].record.record_id, language))
 
     return NormLookupAnswer(target_norm=target, answer="\n\n".join(lines), confidence="medium")
 
@@ -118,30 +114,35 @@ def _asks_simple(query: str) -> bool:
             "в двух словах",
             "коротко",
             "объясни проще",
+            "in simple terms",
+            "simple words",
+            "briefly",
+            "shortly",
+            "explain simply",
         ]
     )
 
 
 def _asks_table(query: str) -> bool:
     normalized = normalize_text(query)
-    return any(marker in normalized for marker in ["таблиц", "столбец", "компонент"])
+    return any(marker in normalized for marker in ["таблиц", "столбец", "компонент", "table", "column", "component"])
 
 
-def _build_component_table_answer(target: str, paragraphs: list[SearchResult]) -> str:
+def _build_component_table_answer(target: str, paragraphs: list[SearchResult], language: str) -> str:
     paragraph_texts = [result.record.text for result in paragraphs]
     components = _extract_components(paragraph_texts)
     if not components:
-        return _build_simple_answer(target, paragraphs)
+        return _build_simple_answer(target, paragraphs, language)
 
-    rows = [
-        "| Компонент | Какие коды и счета входят |",
-        "|---|---|",
-    ]
+    if language == "en":
+        rows = ["| Component | Included codes and accounts |", "|---|---|"]
+    else:
+        rows = ["| Компонент | Какие коды и счета входят |", "|---|---|"]
     for component in _requested_component_order(components):
         rows.append(f"| {component} | {components[component]} |")
 
     source = paragraphs[0].record if paragraphs else None
-    source_text = f"\n\nИсточник: {source.source_name}, {source.record_id}." if source else ""
+    source_text = f"\n\n{_source_line(source.source_name, source.record_id, language)}" if source else ""
     return "\n".join(rows) + source_text
 
 
@@ -175,9 +176,17 @@ def _compact(text: str, limit: int = 1200) -> str:
     return compacted[: limit - 3].rstrip() + "..."
 
 
-def _build_simple_answer(target: str, paragraphs: list[SearchResult]) -> str:
+def _build_simple_answer(target: str, paragraphs: list[SearchResult], language: str) -> str:
     source = paragraphs[0].record if paragraphs else None
-    source_text = f"\n\nИсточник: {source.source_name}, {source.record_id}." if source else ""
+    source_text = f"\n\n{_source_line(source.source_name, source.record_id, language)}" if source else ""
+    if language == "en":
+        return (
+            f"{target} is a bank risk limit for a related party or group of related parties.\n\n"
+            "In simple terms: how much risk the bank may take on related parties relative to its capital. "
+            "The matched text says that Крл is compared with the bank's own funds; "
+            "the formula itself appears to be inserted into the DOCX as an image and is not recognized by the current text index."
+            f"{source_text}"
+        )
     return (
         f"{target} - это лимит риска банка на связанное с ним лицо или группу связанных лиц.\n\n"
         "Проще: сколько банк может рискнуть на связанных с ним лиц относительно своего капитала. "
@@ -185,3 +194,29 @@ def _build_simple_answer(target: str, paragraphs: list[SearchResult]) -> str:
         "сама формула в DOCX вставлена как изображение и текущим текстовым индексом не распознана."
         f"{source_text}"
     )
+
+
+def _found_norm_line(target: str, language: str) -> str:
+    if language == "en":
+        return f"{target}: calculation description found in the document text."
+    return f"{target}: найдено описание расчета в тексте документа."
+
+
+def _formula_image_note(language: str) -> str:
+    if language == "en":
+        return (
+            "Note: the formula in this DOCX is probably inserted as an image or Word object. "
+            "The current text index extracted the surrounding text but did not recognize the formula image. "
+            "OCR/formula extraction is needed to extract the exact fraction."
+        )
+    return (
+        "Важно: сама формула в этом DOCX, вероятно, вставлена как изображение/объект Word. "
+        "Текущий текстовый индекс извлек окружающий текст, но не распознал изображение формулы. "
+        "Для точного извлечения самой дроби нужно добавить OCR/извлечение формул из изображений."
+    )
+
+
+def _source_line(source_name: str, record_id: str, language: str) -> str:
+    if language == "en":
+        return f"Source: {source_name}, {record_id}."
+    return f"Источник: {source_name}, {record_id}."
