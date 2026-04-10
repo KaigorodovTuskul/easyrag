@@ -78,6 +78,29 @@ def build_search_records(parsed: ParsedDocx) -> list[SearchRecord]:
                 )
             )
 
+            if row.row_index == 0:
+                continue
+
+            for cell_index, cell_value in enumerate(row.values):
+                if not cell_value.strip():
+                    continue
+                header_value = header[cell_index] if cell_index < len(header) else f"column_{cell_index}"
+                records.append(
+                    SearchRecord(
+                        record_id=f"{table.element_id}:r-{row.row_index}:c-{cell_index}",
+                        source_name=parsed.source_name,
+                        record_type="table_cell",
+                        section_path=table.section_path,
+                        text=f"{header_value}: {cell_value}",
+                        metadata={
+                            "table_id": table.element_id,
+                            "row_index": row.row_index,
+                            "col_index": cell_index,
+                            "header": header_value,
+                        },
+                    )
+                )
+
     return records
 
 

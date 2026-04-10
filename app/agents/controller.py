@@ -38,12 +38,16 @@ def run_agent_retrieval(
     mode = _select_mode(query_type, embedding_records)
     steps.append(AgentStep("classify_query", {"query_type": query_type, "selected_mode": mode}))
 
-    results = _run_retrieval(provider, records, embedding_records, query, embed_model, mode, limit, steps)
+    normalized_query = normalize_query(query)
+    if normalized_query != query:
+        steps.append(AgentStep("normalize_query", {"from": query, "to": normalized_query}))
+
+    results = _run_retrieval(provider, records, embedding_records, normalized_query, embed_model, mode, limit, steps)
 
     if not results and query_type != "exact":
-        rewritten = rewrite_query(query)
-        if rewritten != query:
-            steps.append(AgentStep("rewrite_query", {"from": query, "to": rewritten}))
+        rewritten = rewrite_query(normalized_query)
+        if rewritten != normalized_query:
+            steps.append(AgentStep("rewrite_query", {"from": normalized_query, "to": rewritten}))
             results = _run_retrieval(provider, records, embedding_records, rewritten, embed_model, mode, limit, steps)
 
     steps.append(AgentStep("finalize", {"result_count": len(results)}))
@@ -58,18 +62,36 @@ def run_agent_retrieval(
 
 def classify_query(query: str) -> str:
     normalized = query.strip()
-    if re.fullmatch(r"[\w\.\-А-Яа-яЁё]+", normalized) and re.search(r"\d", normalized):
+    lower = normalized.lower().replace("\u0451", "\u0435")
+
+    if re.fullmatch(r"[\w\.\-]+", normalized, flags=re.UNICODE) and re.search(r"\d", normalized):
         return "exact"
-    if re.search(r"\b(код|счет|норматив|таблиц|строк)", normalized, flags=re.IGNORECASE):
+
+    table_keywords = [
+        "\u043a\u043e\u0434",
+        "\u0441\u0447\u0435\u0442",
+        "\u043d\u043e\u0440\u043c\u0430\u0442\u0438\u0432",
+        "\u0442\u0430\u0431\u043b\u0438\u0446",
+        "\u0441\u0442\u0440\u043e\u043a",
+    ]
+    if any(keyword in lower for keyword in table_keywords):
         return "table_lookup"
+
     if len(normalized.split()) >= 5:
         return "semantic"
+
     return "exact"
 
 
+def normalize_query(query: str) -> str:
+    normalized = re.sub(r"\bN\s+N\b", "N", query, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
 def rewrite_query(query: str) -> str:
-    rewritten = re.sub(r"\bN\s+N\b", "N", query, flags=re.IGNORECASE)
-    rewritten = re.sub(r"\s+", " ", rewritten).strip()
+    rewritten = normalize_query(query)
+    rewritten = re.sub(r"[?!.]+$", "", rewritten).strip()
     return rewritten
 
 

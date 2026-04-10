@@ -46,7 +46,11 @@ def search_exact(records: list[SearchRecord], query: str, limit: int = 10) -> li
 
 def normalize_text(value: str) -> str:
     lowered = value.lower().replace("\u0451", "\u0435")
-    return re.sub(r"\s+", " ", lowered).strip()
+    normalized = re.sub(r"\bnn\b", "n", lowered)
+    normalized = re.sub(r"\bn\s+n\b", "n", normalized)
+    normalized = normalized.replace("\u043d", "n")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
 
 
 def _terms(value: str) -> list[str]:
@@ -69,8 +73,10 @@ def _score(text: str, query: str, query_terms: list[str], record_type: str) -> t
     if query_terms and all(term in text for term in query_terms):
         score += 25.0
 
-    if record_type == "table_row" and score > 0:
-        score += 10.0
+    if record_type == "table_cell" and score > 0:
+        score += 18.0
+    elif record_type == "table_row" and score > 0:
+        score += 12.0
     elif record_type == "table" and score > 0:
         score += 3.0
 
