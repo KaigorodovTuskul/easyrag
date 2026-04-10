@@ -4,6 +4,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $toolsDir = Join-Path $root "tools"
 $pythonDir = Join-Path $toolsDir "python-portable"
 $zipPath = Join-Path $toolsDir "python-portable.zip"
+$pthPath = Join-Path $pythonDir "python313._pth"
 
 New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $pythonDir | Out-Null
@@ -15,5 +16,14 @@ Invoke-WebRequest -Uri $url -OutFile $zipPath
 
 Write-Host "Extracting into $pythonDir"
 Expand-Archive -Path $zipPath -DestinationPath $pythonDir -Force
+
+@"
+python313.zip
+.
+Lib\site-packages
+..\..
+
+import site
+"@ | Set-Content -Path $pthPath -Encoding ASCII
 
 Write-Host "Portable Python ready at $pythonDir"

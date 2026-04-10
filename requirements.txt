@@ -1,1 +1,2 @@
 streamlit>=1.45,<2
+python-docx>=1.1,<2
