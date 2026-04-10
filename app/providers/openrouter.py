@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+from app.core.config import AppConfig
+from app.core.models import EmbeddingResult, GenerationResult, ModelInfo, ProviderSelection
+from app.providers.base import BaseProvider, ProviderError
+from app.providers.http import HttpJsonClient
+
+
+class OpenRouterProvider(BaseProvider):
+    name = "openrouter"
+
+    def __init__(self, config: AppConfig) -> None:
+        self.config = config
+        headers = {}
+        if config.openrouter_api_key:
+            headers["Authorization"] = f"Bearer {config.openrouter_api_key}"
+        self.client = HttpJsonClient(base_url=config.openrouter_base_url, headers=headers)
+
+    def list_models(self) -> list[ModelInfo]:
+        if not self.config.openrouter_api_key:
+            return [
+                ModelInfo(name=self.config.openrouter_model),
+                ModelInfo(name=self.config.openrouter_embed_model),
+            ]
+
+        payload = self.client.get_json("/models")
+        items = payload.get("data", [])
+        return [
+            ModelInfo(
+                name=item.get("id", ""),
+                family=item.get("architecture", {}).get("modality"),
+                details=item,
+            )
+            for item in items
+        ]
+
+    def get_active_model(self) -> str | None:
+        return None
+
+    def resolve_selection(self) -> ProviderSelection:
+        if not self.config.openrouter_api_key:
+            return ProviderSelection(
+                provider_name=self.name,
+                reachable=False,
+                reason="OPENROUTER_API_KEY is not set",
+                chat_model=self.config.openrouter_model,
+                embed_model=self.config.openrouter_embed_model,
+                available_models=self.list_models(),
+                active_model=None,
+            )
+
+        try:
+            models = self.list_models()
+        except Exception as exc:
+            raise ProviderError(str(exc)) from exc
+
+        return ProviderSelection(
+            provider_name=self.name,
+            reachable=True,
+            reason="Configured OpenRouter fallback",
+            chat_model=self.config.openrouter_model,
+            embed_model=self.config.openrouter_embed_model,
+            available_models=models,
+            active_model=None,
+        )
+
+    def generate(self, prompt: str, model: str | None = None) -> GenerationResult:
+        if not self.config.openrouter_api_key:
+            raise ProviderError("OPENROUTER_API_KEY is not set")
+
+        resolved_model = model or self.config.openrouter_model
+        payload = {
+            "model": resolved_model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        response = self.client.post_json("/chat/completions", payload)
+        choices = response.get("choices", [])
+        message = choices[0].get("message", {}) if choices else {}
+        return GenerationResult(
+            text=message.get("content", ""),
+            model=resolved_model,
+            raw=response,
+        )
+
+    def embed(self, text: str, model: str | None = None) -> EmbeddingResult:
+        if not self.config.openrouter_api_key:
+            raise ProviderError("OPENROUTER_API_KEY is not set")
+
+        resolved_model = model or self.config.openrouter_embed_model
+        payload = {
+            "model": resolved_model,
+            "input": text,
+        }
+        response = self.client.post_json("/embeddings", payload)
+        data = response.get("data", [])
+        vector = data[0].get("embedding", []) if data else []
+        return EmbeddingResult(vector=vector, model=resolved_model, raw=response)

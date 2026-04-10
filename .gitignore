@@ -1,0 +1,9 @@
+.env
+run_cmd.bat
+tools/python-portable/
+tools/python-portable.zip
+__pycache__/
+*.pyc
+.streamlit/
+.pytest_cache/
+.venv/
