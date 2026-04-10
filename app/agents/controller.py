@@ -45,12 +45,14 @@ def run_agent_retrieval(
         steps.append(AgentStep("normalize_query", {"from": query, "to": normalized_query}))
 
     results = _run_retrieval(provider, records, embedding_records, normalized_query, embed_model, mode, limit, steps)
+    results = _expand_table_context(records, results)
 
     if not results and query_type != "exact":
         rewritten = rewrite_query(normalized_query)
         if rewritten != normalized_query:
             steps.append(AgentStep("rewrite_query", {"from": normalized_query, "to": rewritten}))
             results = _run_retrieval(provider, records, embedding_records, rewritten, embed_model, mode, limit, steps)
+            results = _expand_table_context(records, results)
 
     evidence = validate_evidence(results)
     steps.append(
@@ -151,3 +153,36 @@ def _hybrid_trace_to_dict(trace: HybridSearchTrace) -> dict[str, int]:
         "vector_count": trace.vector_count,
         "fused_count": trace.fused_count,
     }
+
+
+def _expand_table_context(records: list[SearchRecord], results: list[SearchResult]) -> list[SearchResult]:
+    by_id = {record.record_id: record for record in records}
+    expanded: list[SearchResult] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.record.record_id not in seen:
+            expanded.append(result)
+            seen.add(result.record.record_id)
+
+        if result.record.record_type != "table_cell":
+            continue
+
+        table_id = result.record.metadata.get("table_id")
+        row_index = result.record.metadata.get("row_index")
+        row_id = f"{table_id}:r-{row_index}"
+        row_record = by_id.get(row_id)
+        if row_record is None or row_record.record_id in seen:
+            continue
+
+        expanded.append(
+            SearchResult(
+                record=row_record,
+                score=max(result.score - 0.1, 0),
+                matched_terms=[*result.matched_terms, "row_context"],
+                snippet=row_record.text[:320],
+            )
+        )
+        seen.add(row_record.record_id)
+
+    return expanded
