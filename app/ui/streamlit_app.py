@@ -6,6 +6,7 @@ from app.agents.answer import build_answer_context
 from app.agents.code_lookup import try_build_code_lookup_answer
 from app.agents.controller import run_agent_retrieval
 from app.agents.embedding_indexer import build_embedding_index
+from app.agents.norm_lookup import try_build_norm_lookup_answer
 from app.core.config import AppConfig
 from app.eval.runner import run_eval
 from app.providers.base import ProviderError
@@ -136,6 +137,11 @@ def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str
     if code_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
         return code_answer.answer
+
+    norm_answer = try_build_norm_lookup_answer(prompt, agent_result.results)
+    if norm_answer is not None:
+        st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
+        return norm_answer.answer
 
     answer_context = build_answer_context(prompt, agent_result.results, evidence=agent_result.evidence)
     st.session_state["last_debug"]["citations"] = answer_context.citations

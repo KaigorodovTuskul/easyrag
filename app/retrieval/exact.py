@@ -48,13 +48,18 @@ def normalize_text(value: str) -> str:
     lowered = value.lower().replace("\u0451", "\u0435")
     normalized = re.sub(r"\bnn\b", "n", lowered)
     normalized = re.sub(r"\bn\s+n\b", "n", normalized)
-    normalized = normalized.replace("\u043d", "n")
+    normalized = re.sub(r"\b\u043d(?=\d)", "n", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
 
 
 def _terms(value: str) -> list[str]:
-    return [term for term in re.findall(r"[\w\.\-]+", value, flags=re.UNICODE) if len(term) > 1]
+    stopwords = {"как", "что", "где", "это", "или", "для", "при", "про", "по"}
+    return [
+        term
+        for term in re.findall(r"[\w\.\-]+", value, flags=re.UNICODE)
+        if len(term) > 1 and term not in stopwords
+    ]
 
 
 def _score(text: str, query: str, query_terms: list[str], record_type: str) -> tuple[float, list[str]]:
@@ -67,7 +72,7 @@ def _score(text: str, query: str, query_terms: list[str], record_type: str) -> t
 
     for term in query_terms:
         if term in text:
-            score += 5.0
+            score += _term_weight(term)
             matched_terms.append(term)
 
     if query_terms and all(term in text for term in query_terms):
@@ -81,6 +86,16 @@ def _score(text: str, query: str, query_terms: list[str], record_type: str) -> t
         score += 3.0
 
     return score, list(dict.fromkeys(matched_terms))
+
+
+def _term_weight(term: str) -> float:
+    if re.fullmatch(r"n\d+(?:\.\d+)?", term):
+        return 55.0
+    if re.fullmatch(r"\d{3,}(?:\.\d+)?", term):
+        return 45.0
+    if re.search(r"\d", term):
+        return 20.0
+    return 5.0
 
 
 def _make_snippet(text: str, normalized_query: str, width: int = 320) -> str:

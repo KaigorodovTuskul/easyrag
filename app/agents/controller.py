@@ -46,6 +46,7 @@ def run_agent_retrieval(
 
     results = _run_retrieval(provider, records, embedding_records, normalized_query, embed_model, mode, limit, steps)
     results = _expand_table_context(records, results)
+    results = _expand_paragraph_context(records, results, normalized_query)
 
     if not results and query_type != "exact":
         rewritten = rewrite_query(normalized_query)
@@ -53,6 +54,7 @@ def run_agent_retrieval(
             steps.append(AgentStep("rewrite_query", {"from": normalized_query, "to": rewritten}))
             results = _run_retrieval(provider, records, embedding_records, rewritten, embed_model, mode, limit, steps)
             results = _expand_table_context(records, results)
+            results = _expand_paragraph_context(records, results, rewritten)
 
     evidence = validate_evidence(results)
     steps.append(
@@ -186,3 +188,46 @@ def _expand_table_context(records: list[SearchRecord], results: list[SearchResul
         seen.add(row_record.record_id)
 
     return expanded
+
+
+def _expand_paragraph_context(records: list[SearchRecord], results: list[SearchResult], query: str) -> list[SearchResult]:
+    if not _needs_paragraph_context(query):
+        return results
+
+    by_id = {record.record_id: record for record in records}
+    expanded: list[SearchResult] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.record.record_id not in seen:
+            expanded.append(result)
+            seen.add(result.record.record_id)
+
+        if result.record.record_type != "paragraph" or not result.record.record_id.startswith("p-"):
+            continue
+
+        try:
+            paragraph_number = int(result.record.record_id.split("-", 1)[1])
+        except ValueError:
+            continue
+
+        for offset in range(1, 4):
+            neighbor = by_id.get(f"p-{paragraph_number + offset}")
+            if neighbor is None or neighbor.record_id in seen:
+                continue
+            expanded.append(
+                SearchResult(
+                    record=neighbor,
+                    score=max(result.score - offset * 0.1, 0),
+                    matched_terms=[*result.matched_terms, "paragraph_context"],
+                    snippet=neighbor.text[:320],
+                )
+            )
+            seen.add(neighbor.record_id)
+
+    return expanded
+
+
+def _needs_paragraph_context(query: str) -> bool:
+    normalized = query.lower().replace("\u0451", "\u0435")
+    return any(term in normalized for term in ["рассчитывается", "расчет", "формуле", "норматив"])
