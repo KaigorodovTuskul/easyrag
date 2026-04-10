@@ -18,6 +18,10 @@ MVP agentic RAG for local DOCX search.
 
 ## `.env`
 
+For Ollama, set your local Ollama endpoint in `OLLAMA_BASE_URL`.
+
+For OpenRouter fallback, fill `OPENROUTER_API_KEY`.
+
 ```env
 OLLAMA_BASE_URL=http://10.32.2.36:11434
 OLLAMA_DEFAULT_MODEL=gemma4:26b
@@ -36,7 +40,3 @@ OPENROUTER_EMBED_MODEL=qwen/qwen3-embedding-8b
 tools\python-portable\python.exe scripts\provider_status.py
 powershell -ExecutionPolicy Bypass -File scripts\run_streamlit.ps1
 ```
-
-## Do Not Commit
-
-`.env`, `data/`, `input/`, `tools/python-portable/`, `run_cmd.bat`.
