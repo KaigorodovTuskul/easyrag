@@ -19,7 +19,7 @@ RU: локальный RAG для DOCX-документов с кэшем баз
 ## Setup: Portable Python
 
 1. Run `bootstrap_env.bat`
-2. Create `.env`
+2. Copy `.env.example` to `.env`
 3. Set `OLLAMA_BASE_URL` for Ollama
 4. If you use OpenRouter fallback, fill `OPENROUTER_API_KEY`
 5. Start with `start_app.bat`
@@ -41,6 +41,8 @@ powershell -ExecutionPolicy Bypass -File scripts\run_streamlit.ps1
 ```
 
 ## `.env`
+
+Start from `.env.example`:
 
 ```env
 APP_LANGUAGE=ru
