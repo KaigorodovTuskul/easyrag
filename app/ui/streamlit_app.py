@@ -8,12 +8,14 @@ from app.agents.answer import build_answer_context
 from app.agents.code_lookup import try_build_code_lookup_answer
 from app.agents.controller import run_agent_retrieval
 from app.agents.embedding_indexer import build_embedding_index
-from app.agents.norm_lookup import try_build_norm_lookup_answer
 from app.core.config import AppConfig
 from app.eval.runner import run_eval
-from app.providers.base import ProviderError
+from app.providers.base import BaseProvider, ProviderError
+from app.providers.ollama import OllamaProvider
+from app.providers.openrouter import OpenRouterProvider
 from app.providers.router import ProviderRouter
 from app.retrieval.records import SearchRecord, build_search_records
+from app.storage.conversations import clear_conversation, load_conversation, save_conversation
 from app.storage.files import save_parsed_payload, save_uploaded_docx
 from app.storage.workspaces import (
     estimate_tokens,
@@ -37,62 +39,111 @@ def main() -> None:
     st.set_page_config(page_title="EasyRAG", layout="wide")
 
     config = AppConfig.load()
-    provider, selection = ProviderRouter(config).resolve()
+    provider, selection = _render_provider_settings(config)
+    workspace_id = _render_sidebar_workspace(provider, selection)
 
     st.title("EasyRAG")
-    st.caption("Загрузите DOCX и задавайте вопросы в чате.")
+    st.caption("Чат по выбранному DOCX-документу")
 
-    tab_chat, tab_debug = st.tabs(["Чат", "Отладка"])
-
-    with tab_chat:
-        workspace_id = _render_workspace_picker(provider, selection)
-        _render_chat(provider, selection, workspace_id)
-
-    with tab_debug:
-        _render_debug(provider.name, selection, st.session_state.get("workspace_id"))
+    _render_chat(provider, selection.chat_model, selection.embed_model, workspace_id)
 
 
-def _render_workspace_picker(provider, selection) -> str | None:
+def _render_provider_settings(config: AppConfig):
+    st.sidebar.header("Модель")
+    mode = st.sidebar.radio("Провайдер", ["auto", "ollama", "openrouter"], horizontal=True)
+
+    provider, selection = _resolve_provider(config, mode)
+    available_model_names = [model.name for model in selection.available_models]
+
+    chat_options = _model_options(available_model_names, selection.chat_model)
+    embed_options = _model_options(available_model_names, selection.embed_model)
+    selection.chat_model = st.sidebar.selectbox("Модель ответа", chat_options, index=chat_options.index(selection.chat_model))
+    selection.embed_model = st.sidebar.selectbox("Модель embeddings", embed_options, index=embed_options.index(selection.embed_model))
+
+    with st.sidebar.expander("Статус провайдера"):
+        st.write(
+            {
+                "provider": provider.name,
+                "reachable": selection.reachable,
+                "active_model": selection.active_model,
+                "reason": selection.reason,
+            }
+        )
+
+    return provider, selection
+
+
+def _resolve_provider(config: AppConfig, mode: str) -> tuple[BaseProvider, object]:
+    if mode == "ollama":
+        provider = OllamaProvider(config)
+        try:
+            return provider, provider.resolve_selection()
+        except ProviderError as exc:
+            st.sidebar.warning(f"Ollama недоступна: {exc}")
+            fallback = OpenRouterProvider(config)
+            return fallback, fallback.resolve_selection()
+
+    if mode == "openrouter":
+        provider = OpenRouterProvider(config)
+        return provider, provider.resolve_selection()
+
+    return ProviderRouter(config).resolve()
+
+
+def _model_options(available: list[str], current: str) -> list[str]:
+    options = [current]
+    options.extend(name for name in available if name and name not in options)
+    return options
+
+
+def _render_sidebar_workspace(provider, selection) -> str | None:
+    st.sidebar.header("Документ")
     workspaces = list_workspaces()
     selected_workspace_id = st.session_state.get("workspace_id")
 
-    with st.container(border=True):
-        col_left, col_right = st.columns([1, 1])
+    if workspaces:
+        labels = [_workspace_label(item) for item in workspaces]
+        ids = [item.workspace_id for item in workspaces]
+        selected_index = ids.index(selected_workspace_id) if selected_workspace_id in ids else 0
+        selected_label = st.sidebar.selectbox("Готовая база", labels, index=selected_index)
+        selected_workspace_id = ids[labels.index(selected_label)]
+        _set_workspace(selected_workspace_id)
+    else:
+        st.sidebar.info("Готовых баз пока нет.")
 
-        with col_left:
-            uploaded_file = st.file_uploader("Загрузить DOCX", type=["docx"])
-            if uploaded_file is not None:
-                selected_workspace_id = _prepare_uploaded_workspace(uploaded_file, provider, selection)
-                st.session_state["workspace_id"] = selected_workspace_id
+    uploaded_file = st.sidebar.file_uploader("Загрузить DOCX", type=["docx"])
+    if uploaded_file is not None:
+        selected_workspace_id = _prepare_uploaded_workspace(uploaded_file, provider, selection)
+        _set_workspace(selected_workspace_id)
 
-        with col_right:
-            if workspaces:
-                labels = [_workspace_label(item) for item in workspaces]
-                ids = [item.workspace_id for item in workspaces]
-                selected_index = ids.index(selected_workspace_id) if selected_workspace_id in ids else 0
-                selected_label = st.selectbox("Или открыть готовую базу", labels, index=selected_index)
-                selected_workspace_id = ids[labels.index(selected_label)]
-                st.session_state["workspace_id"] = selected_workspace_id
-            else:
-                st.info("Готовых баз пока нет.")
+    if selected_workspace_id:
+        _render_workspace_summary(selected_workspace_id)
+        if st.sidebar.button("Очистить диалог"):
+            _clear_chat_context(selected_workspace_id)
+            st.rerun()
 
-        if selected_workspace_id:
-            _render_workspace_summary(selected_workspace_id)
-
+    _render_debug(provider.name, selection, selected_workspace_id)
     return selected_workspace_id
 
 
-def _render_chat(provider, selection, workspace_id: str | None) -> None:
+def _set_workspace(workspace_id: str) -> None:
+    if st.session_state.get("workspace_id") == workspace_id:
+        return
+    st.session_state["workspace_id"] = workspace_id
+    st.session_state["messages"] = load_conversation(workspace_id)
+    st.session_state.pop("last_debug", None)
+    st.session_state.pop("last_user_query", None)
+    st.session_state.pop("last_query_target", None)
+    st.session_state.pop("last_effective_query", None)
+
+
+def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str | None) -> None:
     if "messages" not in st.session_state:
-        st.session_state["messages"] = []
+        st.session_state["messages"] = load_conversation(workspace_id) if workspace_id else []
 
     if not workspace_id:
-        st.info("Сначала загрузите DOCX. После подготовки базы чат станет доступен.")
+        st.info("Загрузите DOCX или выберите готовую базу в левой панели.")
         return
-
-    if st.button("Очистить диалог"):
-        _clear_chat_context()
-        st.rerun()
 
     for message in st.session_state["messages"]:
         with st.chat_message(message["role"]):
@@ -103,17 +154,20 @@ def _render_chat(provider, selection, workspace_id: str | None) -> None:
         return
 
     st.session_state["messages"].append({"role": "user", "content": prompt})
+    save_conversation(workspace_id, st.session_state["messages"])
+
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        answer = _answer_question(provider, selection, workspace_id, prompt)
+        answer = _answer_question(provider, chat_model, embed_model, workspace_id, prompt)
         st.write_stream(_stream_text(answer))
 
     st.session_state["messages"].append({"role": "assistant", "content": answer})
+    save_conversation(workspace_id, st.session_state["messages"])
 
 
-def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str:
+def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: str, prompt: str) -> str:
     records = load_workspace_records(workspace_id)
     embeddings = load_workspace_embeddings(workspace_id)
     effective_query = _build_effective_query(prompt)
@@ -124,7 +178,7 @@ def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str
         records=records,
         embedding_records=embeddings,
         query=effective_query,
-        embed_model=selection.embed_model,
+        embed_model=embed_model,
         limit=12,
     )
 
@@ -156,7 +210,7 @@ def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str
     st.session_state["last_debug"]["citations"] = answer_context.citations
 
     try:
-        generated = provider.generate(answer_context.prompt, model=selection.chat_model)
+        generated = provider.generate(answer_context.prompt, model=chat_model)
     except ProviderError as exc:
         return f"Нашел контекст, но модель ответа недоступна: {exc}"
     except Exception as exc:
@@ -182,7 +236,6 @@ def _build_effective_query(prompt: str) -> str:
 
 
 def _previous_user_message() -> str | None:
-    # Current prompt has already been appended to session_state messages.
     for message in reversed(st.session_state.get("messages", [])[:-1]):
         if message.get("role") == "user":
             return message.get("content")
@@ -201,7 +254,8 @@ def _extract_query_target(prompt: str) -> str | None:
     return None
 
 
-def _clear_chat_context() -> None:
+def _clear_chat_context(workspace_id: str) -> None:
+    clear_conversation(workspace_id)
     for key in [
         "messages",
         "last_debug",
@@ -212,28 +266,11 @@ def _clear_chat_context() -> None:
         st.session_state.pop(key, None)
 
 
-def _stream_text(text: str):
-    for chunk in _stream_chunks(text):
-        yield chunk
-        time.sleep(0.01)
-
-
-def _stream_chunks(text: str):
-    buffer = ""
-    for char in text:
-        buffer += char
-        if char.isspace() or char in ".,;:!?)]}":
-            yield buffer
-            buffer = ""
-    if buffer:
-        yield buffer
-
-
 def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
     try:
         from app.ingestion.docx_parser import parse_docx_bytes
     except ImportError:
-        st.error("Не установлены зависимости для DOCX. Запустите bootstrap_env.bat.")
+        st.sidebar.error("Не установлены зависимости для DOCX. Запустите bootstrap_env.bat.")
         return st.session_state.get("workspace_id")
 
     content = uploaded_file.getvalue()
@@ -242,11 +279,11 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
     info = load_workspace_info(workspace_id)
 
     if info and info.embedding_count > 0 and info.embed_model == selection.embed_model:
-        st.success("База уже готова. Открываю из кэша.")
+        st.sidebar.success("База уже готова. Открываю из кэша.")
         return workspace_id
 
-    st.info("Готовлю базу. Это нужно сделать один раз для документа.")
-    parse_progress = st.progress(0, text="Индексация документа...")
+    st.sidebar.info("Готовлю базу. Это нужно сделать один раз для документа.")
+    parse_progress = st.sidebar.progress(0, text="Индексация документа...")
 
     parsed = parse_docx_bytes(uploaded_file.name, content)
     save_uploaded_docx(uploaded_file.name, content)
@@ -257,20 +294,21 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
 
     _build_workspace_embeddings(workspace_id, provider, selection, records)
     st.session_state["messages"] = []
+    save_conversation(workspace_id, [])
     return workspace_id
 
 
 def _build_workspace_embeddings(workspace_id: str, provider, selection, records: list[SearchRecord]) -> None:
     info = load_workspace_info(workspace_id)
     if info and info.embedding_count > 0 and info.embed_model == selection.embed_model:
-        st.success("Embeddings уже есть. Повторно не считаю.")
+        st.sidebar.success("Embeddings уже есть. Повторно не считаю.")
         return
 
     selected = [record for record in records if record.record_type != "table" and record.text.strip()]
     total_records = len(selected)
     total_tokens = sum(estimate_tokens(record.text) for record in selected)
-    progress = st.progress(0, text=f"Embeddings: 0/{total_records}, ~0/{total_tokens} токенов")
-    log_box = st.empty()
+    progress = st.sidebar.progress(0, text=f"Embeddings: 0/{total_records}, ~0/{total_tokens} токенов")
+    log_box = st.sidebar.empty()
     log_lines: list[str] = []
     processed_tokens = 0
 
@@ -290,51 +328,50 @@ def _build_workspace_embeddings(workspace_id: str, provider, selection, records:
         )
         save_workspace_embeddings(workspace_id, embeddings, selection.embed_model)
     except Exception as exc:
-        st.warning(f"Exact-поиск готов, но embeddings не построены: {exc}")
+        st.sidebar.warning(f"Exact-поиск готов, но embeddings не построены: {exc}")
         return
 
-    st.success(f"Embeddings готовы: {len(embeddings)} фрагментов, примерно {processed_tokens} токенов.")
+    st.sidebar.success(f"Embeddings готовы: {len(embeddings)} фрагментов, примерно {processed_tokens} токенов.")
 
 
 def _render_workspace_summary(workspace_id: str) -> None:
     info = load_workspace_info(workspace_id)
     if info is None:
         return
-    st.caption(f"Текущая база: {info.source_name} · фрагментов: {info.record_count} · embeddings: {info.embedding_count}")
+    st.sidebar.caption(f"Текущая база: {info.source_name}")
+    st.sidebar.caption(f"Фрагментов: {info.record_count}; embeddings: {info.embedding_count}")
 
 
 def _render_debug(provider_name: str, selection, workspace_id: str | None) -> None:
-    st.subheader("Отладка")
-    st.caption("Эта вкладка для суперпользователя: источники, trace, модели, eval.")
+    with st.sidebar.expander("Отладка"):
+        info = load_workspace_info(workspace_id) if workspace_id else None
+        st.write("Текущая база")
+        st.json(asdict(info) if info else {})
 
-    info = load_workspace_info(workspace_id) if workspace_id else None
-    st.write("Текущая база")
-    st.json(asdict(info) if info else {})
+        st.write("Модели")
+        st.json(
+            {
+                "provider": provider_name,
+                "chat_model": selection.chat_model,
+                "embed_model": selection.embed_model,
+                "active_model": selection.active_model,
+                "reason": selection.reason,
+            }
+        )
 
-    st.write("Модели")
-    st.json(
-        {
-            "provider": provider_name,
-            "chat_model": selection.chat_model,
-            "embed_model": selection.embed_model,
-            "active_model": selection.active_model,
-            "reason": selection.reason,
-        }
-    )
+        st.write("Последний запрос")
+        st.json(st.session_state.get("last_debug", {}))
 
-    st.write("Последний запрос")
-    st.json(st.session_state.get("last_debug", {}))
-
-    if st.button("Запустить проверку качества"):
-        try:
-            results = run_eval()
-        except Exception as exc:
-            st.error(f"Проверка не запустилась: {exc}")
-            return
-        hit_at_1 = sum(1 for result in results if result.hit_at_1)
-        hit_at_3 = sum(1 for result in results if result.hit_at_3)
-        st.write({"кейсов": len(results), "hit@1": hit_at_1, "hit@3": hit_at_3})
-        st.dataframe([asdict(result) for result in results], use_container_width=True, hide_index=True)
+        if st.button("Запустить проверку качества"):
+            try:
+                results = run_eval()
+            except Exception as exc:
+                st.error(f"Проверка не запустилась: {exc}")
+                return
+            hit_at_1 = sum(1 for result in results if result.hit_at_1)
+            hit_at_3 = sum(1 for result in results if result.hit_at_3)
+            st.write({"кейсов": len(results), "hit@1": hit_at_1, "hit@3": hit_at_3})
+            st.dataframe([asdict(result) for result in results], use_container_width=True, hide_index=True)
 
 
 def _workspace_label(info) -> str:
@@ -356,6 +393,23 @@ def _result_to_debug(result) -> dict:
         "matched_terms": result.matched_terms,
         "snippet": result.snippet,
     }
+
+
+def _stream_text(text: str):
+    for chunk in _stream_chunks(text):
+        yield chunk
+        time.sleep(0.01)
+
+
+def _stream_chunks(text: str):
+    buffer = ""
+    for char in text:
+        buffer += char
+        if char.isspace() or char in ".,;:!?)]}":
+            yield buffer
+            buffer = ""
+    if buffer:
+        yield buffer
 
 
 if __name__ == "__main__":
