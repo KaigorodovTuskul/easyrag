@@ -52,7 +52,10 @@ def main() -> None:
 
 
 def _render_language_settings(config: AppConfig) -> str:
-    configured = normalize_language(st.session_state.get("language") or config.app_language)
+    if "language" not in st.session_state:
+        st.session_state["language"] = normalize_language(config.app_language)
+
+    configured = normalize_language(st.session_state["language"])
     st.sidebar.header(t("language.header", configured))
     labels = {"ru": "RU", "en": "EN"}
     selected = st.sidebar.radio(
@@ -61,8 +64,8 @@ def _render_language_settings(config: AppConfig) -> str:
         index=list(SUPPORTED_LANGUAGES).index(configured),
         format_func=lambda value: labels[value],
         horizontal=True,
+        key="language",
     )
-    st.session_state["language"] = selected
     return selected
 
 
@@ -81,10 +84,10 @@ def _render_provider_settings(config: AppConfig, language: str):
     with st.sidebar.expander(t("provider_status.title", language)):
         st.write(
             {
-                "provider": provider.name,
-                "reachable": selection.reachable,
-                "active_model": selection.active_model,
-                "reason": selection.reason,
+                t("provider_status.provider", language): provider.name,
+                t("provider_status.reachable", language): selection.reachable,
+                t("provider_status.active_model", language): selection.active_model,
+                t("provider_status.reason", language): _localize_reason(selection.reason, language),
             }
         )
 
@@ -112,6 +115,20 @@ def _model_options(available: list[str], current: str) -> list[str]:
     options = [current]
     options.extend(name for name in available if name and name not in options)
     return options
+
+
+def _localize_reason(reason: str, language: str) -> str:
+    replacements = {
+        "Active model from /api/ps is selected": t("reason.active_ollama_model", language),
+        "Default model selection applied": t("reason.default_model", language),
+        "OPENROUTER_API_KEY is not set": t("reason.openrouter_key_missing", language),
+        "Configured OpenRouter fallback": t("reason.openrouter_fallback", language),
+        "Ollama unavailable": t("reason.ollama_unavailable", language),
+    }
+    localized = reason
+    for source, target in replacements.items():
+        localized = localized.replace(source, target)
+    return localized
 
 
 def _render_sidebar_workspace(provider, selection, language: str) -> str | None:
