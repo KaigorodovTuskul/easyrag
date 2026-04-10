@@ -92,6 +92,19 @@ class OllamaProvider(BaseProvider):
         vector = embeddings[0] if embeddings else []
         return EmbeddingResult(vector=vector, model=resolved_model, raw=response)
 
+    def embed_many(self, texts: list[str], model: str | None = None) -> list[EmbeddingResult]:
+        if not texts:
+            return []
+
+        resolved_model = model or self.resolve_selection().embed_model
+        payload = {
+            "model": resolved_model,
+            "input": texts,
+        }
+        response = self.client.post_json("/api/embed", payload)
+        embeddings = response.get("embeddings") or []
+        return [EmbeddingResult(vector=vector, model=resolved_model, raw=response) for vector in embeddings]
+
     def _pick_chat_model(self, active_model: str | None, available_names: set[str]) -> str:
         if active_model and active_model in available_names:
             return active_model

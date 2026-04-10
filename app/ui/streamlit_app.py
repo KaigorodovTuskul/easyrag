@@ -43,7 +43,7 @@ def main() -> None:
     config = AppConfig.load()
     language = _render_language_settings(config)
     provider, selection = _render_provider_settings(config, language)
-    workspace_id = _render_sidebar_workspace(provider, selection, language)
+    workspace_id = _render_sidebar_workspace(config, provider, selection, language)
 
     st.title("EasyRAG")
     st.caption(t("app.caption", language))
@@ -131,7 +131,7 @@ def _localize_reason(reason: str, language: str) -> str:
     return localized
 
 
-def _render_sidebar_workspace(provider, selection, language: str) -> str | None:
+def _render_sidebar_workspace(config: AppConfig, provider, selection, language: str) -> str | None:
     st.sidebar.header(t("document.header", language))
     workspaces = list_workspaces()
     selected_workspace_id = st.session_state.get("workspace_id")
@@ -148,7 +148,7 @@ def _render_sidebar_workspace(provider, selection, language: str) -> str | None:
 
     uploaded_file = st.sidebar.file_uploader(t("upload.label", language), type=["docx"])
     if uploaded_file is not None:
-        selected_workspace_id = _prepare_uploaded_workspace(uploaded_file, provider, selection, language)
+        selected_workspace_id = _prepare_uploaded_workspace(uploaded_file, provider, selection, config, language)
         _set_workspace(selected_workspace_id)
 
     if selected_workspace_id:
@@ -301,7 +301,7 @@ def _clear_chat_context(workspace_id: str) -> None:
         st.session_state.pop(key, None)
 
 
-def _prepare_uploaded_workspace(uploaded_file, provider, selection, language: str) -> str:
+def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppConfig, language: str) -> str:
     try:
         from app.ingestion.docx_parser import parse_docx_bytes
     except ImportError:
@@ -327,13 +327,20 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, language: st
     save_workspace_records(workspace_id, parsed.source_name, file_hash, records)
     parse_progress.progress(1.0, text=t("indexing.done", language, records=len(records), tokens=_records_tokens(records)))
 
-    _build_workspace_embeddings(workspace_id, provider, selection, records, language)
+    _build_workspace_embeddings(workspace_id, provider, selection, records, config.embedding_batch_size, language)
     st.session_state["messages"] = []
     save_conversation(workspace_id, [])
     return workspace_id
 
 
-def _build_workspace_embeddings(workspace_id: str, provider, selection, records: list[SearchRecord], language: str) -> None:
+def _build_workspace_embeddings(
+    workspace_id: str,
+    provider,
+    selection,
+    records: list[SearchRecord],
+    batch_size: int,
+    language: str,
+) -> None:
     info = load_workspace_info(workspace_id)
     if info and info.embedding_count > 0 and info.embed_model == selection.embed_model:
         st.sidebar.success(t("embeddings.cached", language))
@@ -362,6 +369,7 @@ def _build_workspace_embeddings(workspace_id: str, provider, selection, records:
             provider=provider,
             records=records,
             model=selection.embed_model,
+            batch_size=batch_size,
             progress_callback=on_progress,
         )
         save_workspace_embeddings(workspace_id, embeddings, selection.embed_model)

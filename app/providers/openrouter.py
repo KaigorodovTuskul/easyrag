@@ -95,3 +95,24 @@ class OpenRouterProvider(BaseProvider):
         data = response.get("data", [])
         vector = data[0].get("embedding", []) if data else []
         return EmbeddingResult(vector=vector, model=resolved_model, raw=response)
+
+    def embed_many(self, texts: list[str], model: str | None = None) -> list[EmbeddingResult]:
+        if not self.config.openrouter_api_key:
+            raise ProviderError("OPENROUTER_API_KEY is not set")
+        if not texts:
+            return []
+
+        resolved_model = model or self.config.openrouter_embed_model
+        payload = {
+            "model": resolved_model,
+            "input": texts,
+        }
+        response = self.client.post_json("/embeddings", payload)
+        data = response.get("data", [])
+        if all(isinstance(item, dict) and "index" in item for item in data):
+            data = sorted(data, key=lambda item: item["index"])
+        return [
+            EmbeddingResult(vector=item.get("embedding", []), model=resolved_model, raw=response)
+            for item in data
+            if isinstance(item, dict)
+        ]

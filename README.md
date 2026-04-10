@@ -56,6 +56,8 @@ OLLAMA_INFERENCE_TIMEOUT_SECONDS=300
 OPENROUTER_API_KEY=
 OPENROUTER_MODEL=google/gemma-4-26b-a4b-it
 OPENROUTER_EMBED_MODEL=qwen/qwen3-embedding-8b
+
+EMBEDDING_BATCH_SIZE=16
 ```
 
 `APP_LANGUAGE` supports `ru` and `en`. The language can also be switched in the UI.

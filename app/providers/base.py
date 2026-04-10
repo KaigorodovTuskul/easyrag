@@ -31,3 +31,6 @@ class BaseProvider(ABC):
     @abstractmethod
     def embed(self, text: str, model: str | None = None) -> EmbeddingResult:
         raise NotImplementedError
+
+    def embed_many(self, texts: list[str], model: str | None = None) -> list[EmbeddingResult]:
+        return [self.embed(text, model=model) for text in texts]
