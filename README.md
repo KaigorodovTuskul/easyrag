@@ -6,6 +6,10 @@ Local-first agentic RAG for DOCX documents.
   <b>Exact search</b> + <b>hybrid retrieval</b> + <b>Ollama/OpenRouter routing</b> + <b>Streamlit chat UI</b>
 </p>
 
+## Demo
+
+![EasyRAG demo](demo.gif)
+
 ## Overview
 
 EasyRAG builds a local workspace for one uploaded DOCX document, caches parsed fragments and embeddings, then lets the user ask questions in a chat interface.
