@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from app.agents.answer import build_answer_context
 from app.core.config import AppConfig
+from app.providers.base import ProviderError
 from app.providers.router import ProviderRouter
 from app.retrieval.exact import search_exact
 from app.retrieval.records import build_search_records
@@ -140,7 +142,7 @@ def _render_exact_search(parsed) -> None:
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
-def _render_persistent_search() -> None:
+def _render_persistent_search(provider, selection) -> None:
     st.subheader("Saved Index Search")
     summary = get_index_summary()
     st.write(summary)
@@ -171,6 +173,21 @@ def _render_persistent_search() -> None:
         for result in results
     ]
     st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    with st.expander("Answer generation", expanded=True):
+        answer_context = build_answer_context(query, results)
+        st.caption(f"Using model: {selection.chat_model}")
+        st.json(answer_context.citations)
+
+        if st.button("Generate answer", key="generate_saved_index_answer"):
+            try:
+                generated = provider.generate(answer_context.prompt, model=selection.chat_model)
+            except ProviderError as exc:
+                st.error(f"Provider error: {exc}")
+            except Exception as exc:
+                st.error(f"Answer generation failed: {exc}")
+            else:
+                st.markdown(generated.text or "Empty answer returned by provider.")
 
 
 def main() -> None:
@@ -211,7 +228,7 @@ def main() -> None:
         """
     )
 
-    _render_persistent_search()
+    _render_persistent_search(provider, selection)
     _render_docx_ingestion()
 
 

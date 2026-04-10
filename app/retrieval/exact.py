@@ -45,7 +45,7 @@ def search_exact(records: list[SearchRecord], query: str, limit: int = 10) -> li
 
 
 def normalize_text(value: str) -> str:
-    lowered = value.lower().replace("ё", "е")
+    lowered = value.lower().replace("\u0451", "\u0435")
     return re.sub(r"\s+", " ", lowered).strip()
 
 
