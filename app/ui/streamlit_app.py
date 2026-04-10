@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from app.agents.answer import build_answer_context
+from app.agents.embedding_indexer import build_embedding_index
 from app.core.config import AppConfig
 from app.providers.base import ProviderError
 from app.providers.router import ProviderRouter
 from app.retrieval.exact import search_exact
+from app.retrieval.hybrid import search_hybrid
 from app.retrieval.records import build_search_records
 from app.storage.files import save_parsed_payload, save_uploaded_docx
+from app.storage.embeddings import load_embeddings, replace_embeddings
 from app.storage.index import get_index_summary, load_index_records, replace_document_records
 
 try:
@@ -148,13 +151,50 @@ def _render_persistent_search(provider, selection) -> None:
     st.write(summary)
 
     records = load_index_records()
+    embedding_records = load_embeddings()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.caption(f"Exact records: {len(records)}")
+    with col2:
+        st.caption(f"Embedding records: {len(embedding_records)}")
+
+    if st.button("Build embedding index", disabled=not records):
+        try:
+            with st.spinner("Building embeddings..."):
+                embeddings = build_embedding_index(provider, records, model=selection.embed_model)
+                replace_embeddings(embeddings)
+        except ProviderError as exc:
+            st.error(f"Embedding provider error: {exc}")
+        except Exception as exc:
+            st.error(f"Embedding indexing failed: {exc}")
+        else:
+            st.success(f"Embedding index built: {len(embeddings)} records")
+            embedding_records = embeddings
+
+    mode = st.radio("Search mode", ["exact", "hybrid"], horizontal=True)
     query = st.text_input("Search saved index", placeholder="Try: 8580, N1.1, 47405", key="saved_index_query")
 
     if not query:
         return
 
-    results = search_exact(records, query=query, limit=30)
-    st.caption(f"Indexed records: {len(records)}. Results: {len(results)}")
+    if mode == "hybrid":
+        query_vector = []
+        if embedding_records:
+            try:
+                query_vector = provider.embed(query, model=selection.embed_model).vector
+            except ProviderError as exc:
+                st.error(f"Embedding provider error: {exc}")
+            except Exception as exc:
+                st.error(f"Query embedding failed: {exc}")
+        results, trace = search_hybrid(records, embedding_records, query=query, query_vector=query_vector, limit=30)
+        st.caption(
+            f"Indexed records: {len(records)}. Results: {len(results)}. "
+            f"Trace: exact={trace.exact_count}, vector={trace.vector_count}, fused={trace.fused_count}"
+        )
+    else:
+        results = search_exact(records, query=query, limit=30)
+        st.caption(f"Indexed records: {len(records)}. Results: {len(results)}")
 
     if not results:
         st.warning("No exact/keyword matches found in saved index.")
