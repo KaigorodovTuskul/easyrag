@@ -110,18 +110,20 @@ def _render_chat(provider, selection, workspace_id: str | None) -> None:
 def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str:
     records = load_workspace_records(workspace_id)
     embeddings = load_workspace_embeddings(workspace_id)
+    effective_query = _build_effective_query(prompt)
 
     agent_result = run_agent_retrieval(
         provider=provider,
         records=records,
         embedding_records=embeddings,
-        query=prompt,
+        query=effective_query,
         embed_model=selection.embed_model,
         limit=12,
     )
 
     st.session_state["last_debug"] = {
         "query": prompt,
+        "effective_query": effective_query,
         "workspace_id": workspace_id,
         "query_type": agent_result.query_type,
         "mode": agent_result.mode,
@@ -133,17 +135,17 @@ def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str
     if not agent_result.results:
         return "Не нашел подходящий фрагмент в выбранном документе. Попробуйте точный код, номер счета или другую формулировку."
 
-    code_answer = try_build_code_lookup_answer(prompt, agent_result.results)
+    code_answer = try_build_code_lookup_answer(effective_query, agent_result.results)
     if code_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
         return code_answer.answer
 
-    norm_answer = try_build_norm_lookup_answer(prompt, agent_result.results)
+    norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results)
     if norm_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
         return norm_answer.answer
 
-    answer_context = build_answer_context(prompt, agent_result.results, evidence=agent_result.evidence)
+    answer_context = build_answer_context(effective_query, agent_result.results, evidence=agent_result.evidence)
     st.session_state["last_debug"]["citations"] = answer_context.citations
 
     try:
@@ -154,6 +156,42 @@ def _answer_question(provider, selection, workspace_id: str, prompt: str) -> str
         return f"Нашел контекст, но не смог сформировать ответ: {exc}"
 
     return generated.text or "Модель вернула пустой ответ."
+
+
+def _build_effective_query(prompt: str) -> str:
+    if not _is_followup(prompt):
+        return prompt
+
+    previous_user_message = _previous_user_message()
+    if not previous_user_message:
+        return prompt
+
+    return f"{previous_user_message}\nУточнение: {prompt}"
+
+
+def _previous_user_message() -> str | None:
+    # Current prompt has already been appended to session_state messages.
+    for message in reversed(st.session_state.get("messages", [])[:-1]):
+        if message.get("role") == "user":
+            return message.get("content")
+    return None
+
+
+def _is_followup(prompt: str) -> bool:
+    normalized = prompt.lower().replace("ё", "е").strip()
+    followup_markers = [
+        "простыми словами",
+        "в двух словах",
+        "коротко",
+        "подробнее",
+        "объясни проще",
+        "а если",
+        "а подробнее",
+        "что это значит",
+    ]
+    if any(marker in normalized for marker in followup_markers):
+        return True
+    return len(normalized.split()) <= 4 and not any(char.isdigit() for char in normalized)
 
 
 def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:

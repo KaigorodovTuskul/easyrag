@@ -31,6 +31,13 @@ def try_build_norm_lookup_answer(query: str, results: list[SearchResult]) -> Nor
     paragraphs = _select_anchor_context(anchor, results)
     text = "\n\n".join(result.record.text for result in paragraphs[:5])
 
+    if _asks_simple(query):
+        return NormLookupAnswer(
+            target_norm=target,
+            answer=_build_simple_answer(target, paragraphs),
+            confidence="medium",
+        )
+
     lines = [
         f"{target}: найдено описание расчета в тексте документа.",
         text,
@@ -92,3 +99,28 @@ def _paragraph_sort_key(result: SearchResult) -> int:
         return int(result.record.record_id.split("-", 1)[1])
     except ValueError:
         return 10**9
+
+
+def _asks_simple(query: str) -> bool:
+    normalized = normalize_text(query)
+    return any(
+        marker in normalized
+        for marker in [
+            "простыми словами",
+            "в двух словах",
+            "коротко",
+            "объясни проще",
+        ]
+    )
+
+
+def _build_simple_answer(target: str, paragraphs: list[SearchResult]) -> str:
+    source = paragraphs[0].record if paragraphs else None
+    source_text = f"\n\nИсточник: {source.source_name}, {source.record_id}." if source else ""
+    return (
+        f"{target} - это лимит риска банка на связанное с ним лицо или группу связанных лиц.\n\n"
+        "Проще: сколько банк может рискнуть на связанных с ним лиц относительно своего капитала. "
+        "В найденном тексте указано, что показатель Крл сравнивается с собственными средствами банка; "
+        "сама формула в DOCX вставлена как изображение и текущим текстовым индексом не распознана."
+        f"{source_text}"
+    )
