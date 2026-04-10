@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from app.core.config import AppConfig
 from app.providers.router import ProviderRouter
+from app.retrieval.exact import search_exact
+from app.retrieval.records import build_search_records
 from app.storage.files import save_parsed_payload, save_uploaded_docx
 
 try:
@@ -55,7 +57,7 @@ def _render_docx_ingestion() -> None:
         }
     )
 
-    tab1, tab2, tab3 = st.tabs(["Overview", "Paragraphs", "Tables"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Paragraphs", "Tables", "Exact Search"])
 
     with tab1:
         _render_doc_overview(parsed)
@@ -65,6 +67,9 @@ def _render_docx_ingestion() -> None:
 
     with tab3:
         _render_tables(parsed)
+
+    with tab4:
+        _render_exact_search(parsed)
 
 
 def _render_doc_overview(parsed) -> None:
@@ -100,6 +105,35 @@ def _render_tables(parsed) -> None:
         st.caption(f"Section: {' / '.join(table.section_path) if table.section_path else 'Root'}")
         rows = [row.values for row in table.rows]
         st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def _render_exact_search(parsed) -> None:
+    records = build_search_records(parsed)
+    query = st.text_input("Search parsed document", placeholder="Try: 8580, Н1.1, ипотечным ссудам")
+
+    if not query:
+        st.caption(f"Searchable records: {len(records)}")
+        return
+
+    results = search_exact(records, query=query, limit=20)
+    st.caption(f"Searchable records: {len(records)}. Results: {len(results)}")
+
+    if not results:
+        st.warning("No exact/keyword matches found.")
+        return
+
+    rows = [
+        {
+            "score": round(result.score, 2),
+            "id": result.record.record_id,
+            "type": result.record.record_type,
+            "section": " / ".join(result.record.section_path),
+            "matched": ", ".join(result.matched_terms[:8]),
+            "snippet": result.snippet,
+        }
+        for result in results
+    ]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 def main() -> None:
