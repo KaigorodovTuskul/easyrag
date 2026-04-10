@@ -24,6 +24,8 @@ class AppConfig:
     ollama_default_embed_model: str
     ollama_tags_path: str
     ollama_ps_path: str
+    ollama_control_timeout_seconds: float
+    ollama_inference_timeout_seconds: float
     openrouter_api_key: str
     openrouter_base_url: str
     openrouter_model: str
@@ -48,6 +50,8 @@ class AppConfig:
             ollama_default_embed_model=merged.get("OLLAMA_DEFAULT_EMBED_MODEL", "qwen3-embedding:8b"),
             ollama_tags_path=merged.get("OLLAMA_TAGS_PATH", "/api/tags"),
             ollama_ps_path=merged.get("OLLAMA_PS_PATH", "/api/ps"),
+            ollama_control_timeout_seconds=float(merged.get("OLLAMA_CONTROL_TIMEOUT_SECONDS", "2")),
+            ollama_inference_timeout_seconds=float(merged.get("OLLAMA_INFERENCE_TIMEOUT_SECONDS", "300")),
             openrouter_api_key=merged.get("OPENROUTER_API_KEY", ""),
             openrouter_base_url=merged.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/"),
             openrouter_model=merged.get("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it"),

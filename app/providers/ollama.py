@@ -11,10 +11,17 @@ class OllamaProvider(BaseProvider):
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.client = HttpJsonClient(base_url=config.ollama_base_url, timeout=2.0)
+        self.control_client = HttpJsonClient(
+            base_url=config.ollama_base_url,
+            timeout=config.ollama_control_timeout_seconds,
+        )
+        self.client = HttpJsonClient(
+            base_url=config.ollama_base_url,
+            timeout=config.ollama_inference_timeout_seconds,
+        )
 
     def list_models(self) -> list[ModelInfo]:
-        payload = self.client.get_json(self.config.ollama_tags_path)
+        payload = self.control_client.get_json(self.config.ollama_tags_path)
         models = payload.get("models", [])
 
         result: list[ModelInfo] = []
@@ -31,7 +38,7 @@ class OllamaProvider(BaseProvider):
         return result
 
     def get_active_model(self) -> str | None:
-        payload = self.client.get_json(self.config.ollama_ps_path)
+        payload = self.control_client.get_json(self.config.ollama_ps_path)
         models = payload.get("models", [])
         if not models:
             return None
