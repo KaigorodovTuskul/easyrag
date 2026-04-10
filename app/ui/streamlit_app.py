@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import re
+import time
 
 from app.agents.answer import build_answer_context
 from app.agents.code_lookup import try_build_code_lookup_answer
@@ -107,7 +108,7 @@ def _render_chat(provider, selection, workspace_id: str | None) -> None:
 
     with st.chat_message("assistant"):
         answer = _answer_question(provider, selection, workspace_id, prompt)
-        st.markdown(answer)
+        st.write_stream(_stream_text(answer))
 
     st.session_state["messages"].append({"role": "assistant", "content": answer})
 
@@ -209,6 +210,23 @@ def _clear_chat_context() -> None:
         "last_effective_query",
     ]:
         st.session_state.pop(key, None)
+
+
+def _stream_text(text: str):
+    for chunk in _stream_chunks(text):
+        yield chunk
+        time.sleep(0.01)
+
+
+def _stream_chunks(text: str):
+    buffer = ""
+    for char in text:
+        buffer += char
+        if char.isspace() or char in ".,;:!?)]}":
+            yield buffer
+            buffer = ""
+    if buffer:
+        yield buffer
 
 
 def _prepare_uploaded_workspace(uploaded_file, provider, selection) -> str:
