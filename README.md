@@ -58,9 +58,11 @@ OPENROUTER_MODEL=google/gemma-4-26b-a4b-it
 OPENROUTER_EMBED_MODEL=qwen/qwen3-embedding-8b
 
 EMBEDDING_BATCH_SIZE=16
+FORMULA_OCR_BACKEND=none
 ```
 
 `APP_LANGUAGE` supports `ru` and `en`. The language can also be switched in the UI.
+`FORMULA_OCR_BACKEND=pix2tex` enables optional image formula OCR when `pix2tex` and its image dependencies are installed. Without it, image formulas are indexed as unresolved formula images.
 
 ## Commands
 

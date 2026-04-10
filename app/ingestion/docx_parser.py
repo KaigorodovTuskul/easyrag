@@ -13,6 +13,8 @@ from docx.oxml.text.paragraph import CT_P
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 
+from app.ingestion.formula_ocr import recognize_formula_image
+
 
 @dataclass(slots=True)
 class ParagraphElement:
@@ -59,7 +61,7 @@ class ParsedDocx:
         return asdict(self)
 
 
-def parse_docx_bytes(source_name: str, content: bytes) -> ParsedDocx:
+def parse_docx_bytes(source_name: str, content: bytes, formula_ocr_backend: str = "none") -> ParsedDocx:
     document = Document(BytesIO(content))
     section_path: list[str] = []
     paragraphs: list[ParagraphElement] = []
@@ -69,7 +71,7 @@ def parse_docx_bytes(source_name: str, content: bytes) -> ParsedDocx:
 
     for block in _iter_block_items(document):
         if isinstance(block, Paragraph):
-            text = block.text.strip()
+            text = _normalize_paragraph_text(block, formula_ocr_backend)
             if not text:
                 continue
 
@@ -101,7 +103,7 @@ def parse_docx_bytes(source_name: str, content: bytes) -> ParsedDocx:
                 row_cells: list[TableCellElement] = []
 
                 for col_idx, cell in enumerate(row.cells):
-                    cell_text = _normalize_cell_text(cell)
+                    cell_text = _normalize_cell_text(cell, formula_ocr_backend)
                     values.append(cell_text)
                     row_cells.append(TableCellElement(row_index=row_idx, col_index=col_idx, text=cell_text))
 
@@ -147,9 +149,97 @@ def _iter_block_items(parent: DocxDocument | _Cell) -> Iterator[Paragraph | Tabl
             yield Table(child, parent)
 
 
-def _normalize_cell_text(cell: _Cell) -> str:
-    parts = [paragraph.text.strip() for paragraph in cell.paragraphs if paragraph.text.strip()]
+def _normalize_cell_text(cell: _Cell, formula_ocr_backend: str) -> str:
+    parts = [_normalize_paragraph_text(paragraph, formula_ocr_backend) for paragraph in cell.paragraphs]
+    parts = [part for part in parts if part]
     return "\n".join(parts)
+
+
+def _normalize_paragraph_text(paragraph: Paragraph, formula_ocr_backend: str) -> str:
+    parts = [paragraph.text.strip()]
+    parts.extend(_extract_omml_formulas(paragraph))
+    parts.extend(_extract_formula_image_markers(paragraph, formula_ocr_backend))
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _extract_omml_formulas(paragraph: Paragraph) -> list[str]:
+    formulas: list[str] = []
+    for formula in paragraph._p.xpath(
+        './/*[local-name()="oMathPara" or (local-name()="oMath" and not(ancestor::*[local-name()="oMathPara"]))]'
+    ):
+        text = _compact_formula_text(_omml_to_text(formula))
+        if text:
+            formulas.append(f"[FORMULA_OMML: {text}]")
+    return formulas
+
+
+def _extract_formula_image_markers(paragraph: Paragraph, formula_ocr_backend: str) -> list[str]:
+    markers: list[str] = []
+    for image_index, relationship_id in enumerate(paragraph._p.xpath(".//a:blip/@r:embed"), start=1):
+        image_part = paragraph.part.related_parts.get(relationship_id)
+        filename = Path(str(image_part.partname)).name if image_part is not None else f"image-{image_index}"
+        recognized = recognize_formula_image(image_part.blob, filename, backend=formula_ocr_backend) if image_part is not None else None
+        if recognized:
+            markers.append(f"[FORMULA_OCR: {recognized}]")
+        else:
+            markers.append(f"[FORMULA_IMAGE: {filename}; not recognized]")
+    return markers
+
+
+def _omml_to_text(element) -> str:
+    if element is None:
+        return ""
+
+    name = _local_name(element)
+
+    if name == "t":
+        return element.text or ""
+
+    if name == "f":
+        numerator = _first_child_by_name(element, "num")
+        denominator = _first_child_by_name(element, "den")
+        return f"({_omml_to_text(numerator)}) / ({_omml_to_text(denominator)})"
+
+    if name == "sSup":
+        base = _first_child_by_name(element, "e")
+        superscript = _first_child_by_name(element, "sup")
+        return f"{_omml_to_text(base)}^{_omml_to_text(superscript)}"
+
+    if name == "sSub":
+        base = _first_child_by_name(element, "e")
+        subscript = _first_child_by_name(element, "sub")
+        return f"{_omml_to_text(base)}_{_omml_to_text(subscript)}"
+
+    if name == "sSubSup":
+        base = _first_child_by_name(element, "e")
+        subscript = _first_child_by_name(element, "sub")
+        superscript = _first_child_by_name(element, "sup")
+        return f"{_omml_to_text(base)}_{_omml_to_text(subscript)}^{_omml_to_text(superscript)}"
+
+    if name in {"num", "den", "e", "lim", "sup", "sub"}:
+        return "".join(_omml_to_text(child) for child in element)
+
+    if name == "r":
+        return "".join(_omml_to_text(child) for child in element)
+
+    return " ".join(_omml_to_text(child) for child in element)
+
+
+def _first_child_by_name(element, name: str):
+    for child in element:
+        if _local_name(child) == name:
+            return child
+    return None
+
+
+def _local_name(element) -> str:
+    if element is None:
+        return ""
+    return element.tag.rsplit("}", 1)[-1]
+
+
+def _compact_formula_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _detect_heading_level(style_name: str, text: str, paragraph_index: int) -> int | None:

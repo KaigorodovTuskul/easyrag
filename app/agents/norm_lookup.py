@@ -29,7 +29,9 @@ def try_build_norm_lookup_answer(query: str, results: list[SearchResult], langua
 
     anchor = _select_anchor_paragraph(relevant)
     paragraphs = _select_anchor_context(anchor, results, include_previous=_asks_table(query))
-    text = "\n\n".join(result.record.text for result in paragraphs[:5])
+    raw_text = "\n\n".join(result.record.text for result in paragraphs[:5])
+    has_unrecognized_formula_image = "[FORMULA_IMAGE:" in raw_text
+    text = _format_formula_markers(raw_text, language)
 
     if _asks_table(query):
         return NormLookupAnswer(
@@ -50,7 +52,7 @@ def try_build_norm_lookup_answer(query: str, results: list[SearchResult], langua
         text,
     ]
 
-    if "по формуле" in normalize_text(text):
+    if has_unrecognized_formula_image or "по формуле" in normalize_text(text):
         lines.append(_formula_image_note(language))
 
     lines.append(_source_line(paragraphs[0].record.source_name, paragraphs[0].record.record_id, language))
@@ -192,6 +194,31 @@ def _compact(text: str, limit: int = 1200) -> str:
     if len(compacted) <= limit:
         return compacted
     return compacted[: limit - 3].rstrip() + "..."
+
+
+def _format_formula_markers(text: str, language: str) -> str:
+    def replace_omml(match: re.Match[str]) -> str:
+        formula = match.group(1).strip()
+        if language == "en":
+            return f"Formula extracted from DOCX equation: {formula}"
+        return f"Формула извлечена из уравнения DOCX: {formula}"
+
+    def replace_ocr(match: re.Match[str]) -> str:
+        formula = match.group(1).strip()
+        if language == "en":
+            return f"Formula recognized from image by OCR, verify accuracy: {formula}"
+        return f"Формула распознана OCR из изображения, проверьте точность: {formula}"
+
+    def replace_image(match: re.Match[str]) -> str:
+        image_name = match.group(1).replace("; not recognized", "").strip()
+        if language == "en":
+            return f"Formula is present as an image but was not recognized: {image_name}."
+        return f"Формула есть как изображение, но не распознана: {image_name}."
+
+    text = re.sub(r"\[FORMULA_OMML:\s*(.*?)\]", replace_omml, text)
+    text = re.sub(r"\[FORMULA_OCR:\s*(.*?)\]", replace_ocr, text)
+    text = re.sub(r"\[FORMULA_IMAGE:\s*(.*?)\]", replace_image, text)
+    return text
 
 
 def _build_simple_answer(target: str, paragraphs: list[SearchResult], language: str) -> str:

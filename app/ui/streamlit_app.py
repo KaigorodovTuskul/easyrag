@@ -310,7 +310,7 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
 
     content = uploaded_file.getvalue()
     file_hash = file_hash_for_content(content)
-    workspace_id = workspace_id_for(uploaded_file.name, file_hash)
+    workspace_id = workspace_id_for(uploaded_file.name, _workspace_cache_hash(content, config))
     info = load_workspace_info(workspace_id)
 
     if info and info.embedding_count > 0 and info.embed_model == selection.embed_model:
@@ -320,7 +320,7 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
     st.sidebar.info(t("workspace_preparing", language))
     parse_progress = st.sidebar.progress(0, text=t("indexing.progress", language))
 
-    parsed = parse_docx_bytes(uploaded_file.name, content)
+    parsed = parse_docx_bytes(uploaded_file.name, content, formula_ocr_backend=config.formula_ocr_backend)
     save_uploaded_docx(uploaded_file.name, content)
     save_parsed_payload(uploaded_file.name, parsed.to_dict())
     records = build_search_records(parsed)
@@ -331,6 +331,11 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
     st.session_state["messages"] = []
     save_conversation(workspace_id, [])
     return workspace_id
+
+
+def _workspace_cache_hash(content: bytes, config: AppConfig) -> str:
+    parser_signature = f"docx-parser:formula-v1:ocr={config.formula_ocr_backend}".encode("utf-8")
+    return file_hash_for_content(content + parser_signature)
 
 
 def _build_workspace_embeddings(

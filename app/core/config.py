@@ -32,6 +32,7 @@ class AppConfig:
     openrouter_model: str
     openrouter_embed_model: str
     embedding_batch_size: int
+    formula_ocr_backend: str
     vector_backend: str
     vector_collection: str
     reranker_enabled: bool
@@ -60,6 +61,7 @@ class AppConfig:
             openrouter_model=merged.get("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it"),
             openrouter_embed_model=merged.get("OPENROUTER_EMBED_MODEL", "qwen/qwen3-embedding-8b"),
             embedding_batch_size=max(1, int(merged.get("EMBEDDING_BATCH_SIZE", "16"))),
+            formula_ocr_backend=merged.get("FORMULA_OCR_BACKEND", "none").strip().lower(),
             vector_backend=merged.get("VECTOR_BACKEND", "local"),
             vector_collection=merged.get("VECTOR_COLLECTION", "easyrag_chunks"),
             reranker_enabled=_get_bool(merged.get("RERANKER_ENABLED"), default=False),
