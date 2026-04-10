@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from typing import Any
 
 from app.ingestion.docx_parser import ParsedDocx
 
@@ -13,6 +14,20 @@ class SearchRecord:
     section_path: list[str]
     text: str
     metadata: dict[str, str | int]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SearchRecord":
+        return cls(
+            record_id=payload["record_id"],
+            source_name=payload["source_name"],
+            record_type=payload["record_type"],
+            section_path=list(payload.get("section_path", [])),
+            text=payload["text"],
+            metadata=dict(payload.get("metadata", {})),
+        )
 
 
 def build_search_records(parsed: ParsedDocx) -> list[SearchRecord]:

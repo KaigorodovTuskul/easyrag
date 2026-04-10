@@ -5,6 +5,7 @@ from app.providers.router import ProviderRouter
 from app.retrieval.exact import search_exact
 from app.retrieval.records import build_search_records
 from app.storage.files import save_parsed_payload, save_uploaded_docx
+from app.storage.index import get_index_summary, load_index_records, replace_document_records
 
 try:
     import streamlit as st
@@ -46,12 +47,15 @@ def _render_docx_ingestion() -> None:
 
     doc_path = save_uploaded_docx(uploaded_file.name, content)
     json_path = save_parsed_payload(uploaded_file.name, parsed.to_dict())
+    records = build_search_records(parsed)
+    replace_document_records(parsed.source_name, records)
 
     st.write(
         {
             "source_name": parsed.source_name,
             "paragraph_count": parsed.paragraph_count,
             "table_count": parsed.table_count,
+            "indexed_records": len(records),
             "saved_docx": str(doc_path),
             "saved_json": str(json_path),
         }
@@ -109,7 +113,7 @@ def _render_tables(parsed) -> None:
 
 def _render_exact_search(parsed) -> None:
     records = build_search_records(parsed)
-    query = st.text_input("Search parsed document", placeholder="Try: 8580, Н1.1, ипотечным ссудам")
+    query = st.text_input("Search parsed document", placeholder="Try: 8580, N1.1, 47405")
 
     if not query:
         st.caption(f"Searchable records: {len(records)}")
@@ -125,6 +129,39 @@ def _render_exact_search(parsed) -> None:
     rows = [
         {
             "score": round(result.score, 2),
+            "id": result.record.record_id,
+            "type": result.record.record_type,
+            "section": " / ".join(result.record.section_path),
+            "matched": ", ".join(result.matched_terms[:8]),
+            "snippet": result.snippet,
+        }
+        for result in results
+    ]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def _render_persistent_search() -> None:
+    st.subheader("Saved Index Search")
+    summary = get_index_summary()
+    st.write(summary)
+
+    records = load_index_records()
+    query = st.text_input("Search saved index", placeholder="Try: 8580, N1.1, 47405", key="saved_index_query")
+
+    if not query:
+        return
+
+    results = search_exact(records, query=query, limit=30)
+    st.caption(f"Indexed records: {len(records)}. Results: {len(results)}")
+
+    if not results:
+        st.warning("No exact/keyword matches found in saved index.")
+        return
+
+    rows = [
+        {
+            "score": round(result.score, 2),
+            "source": result.record.source_name,
             "id": result.record.record_id,
             "type": result.record.record_type,
             "section": " / ".join(result.record.section_path),
@@ -170,10 +207,11 @@ def main() -> None:
         """
         - `Provider routing`: detect live Ollama, prefer active loaded model from `/api/ps`
         - `Fallback`: use OpenRouter when Ollama is unavailable
-        - `Now`: DOCX ingestion, table extraction, JSON debug artifacts
+        - `Now`: DOCX ingestion, table extraction, saved exact-search index
         """
     )
 
+    _render_persistent_search()
     _render_docx_ingestion()
 
 
