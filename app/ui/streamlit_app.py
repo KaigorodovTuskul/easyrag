@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.agents.answer import build_answer_context
+from app.agents.controller import run_agent_retrieval
 from app.agents.embedding_indexer import build_embedding_index
 from app.core.config import AppConfig
 from app.providers.base import ProviderError
@@ -230,6 +231,70 @@ def _render_persistent_search(provider, selection) -> None:
                 st.markdown(generated.text or "Empty answer returned by provider.")
 
 
+def _render_agent_search(provider, selection) -> None:
+    st.subheader("Agent Search")
+    records = load_index_records()
+    embedding_records = load_embeddings()
+    query = st.text_input("Ask with bounded agent", placeholder="Try: what does code 8580 mean?", key="agent_query")
+
+    if not query:
+        st.caption("Agent chooses exact or hybrid retrieval and shows trace.")
+        return
+
+    agent_result = run_agent_retrieval(
+        provider=provider,
+        records=records,
+        embedding_records=embedding_records,
+        query=query,
+        embed_model=selection.embed_model,
+        limit=30,
+    )
+
+    st.write(
+        {
+            "query_type": agent_result.query_type,
+            "mode": agent_result.mode,
+            "result_count": len(agent_result.results),
+        }
+    )
+
+    with st.expander("Agent trace", expanded=True):
+        st.json([{"name": step.name, "details": step.details} for step in agent_result.steps])
+
+    if not agent_result.results:
+        st.warning("Agent found no matching context.")
+        return
+
+    rows = [
+        {
+            "score": round(result.score, 2),
+            "source": result.record.source_name,
+            "id": result.record.record_id,
+            "type": result.record.record_type,
+            "section": " / ".join(result.record.section_path),
+            "matched": ", ".join(result.matched_terms[:8]),
+            "snippet": result.snippet,
+        }
+        for result in agent_result.results
+    ]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    with st.expander("Agent answer generation", expanded=True):
+        answer_context = build_answer_context(query, agent_result.results)
+        st.caption(f"Using model: {selection.chat_model}")
+        st.json(answer_context.citations)
+
+        if st.button("Generate agent answer", key="generate_agent_answer"):
+            try:
+                generated = provider.generate(answer_context.prompt, model=selection.chat_model)
+            except ProviderError as exc:
+                st.error(f"Provider error: {exc}")
+            except Exception as exc:
+                st.error(f"Answer generation failed: {exc}")
+            else:
+                st.markdown(generated.text or "Empty answer returned by provider.")
+
+
 def main() -> None:
     config = AppConfig.load()
     router = ProviderRouter(config)
@@ -264,11 +329,12 @@ def main() -> None:
         """
         - `Provider routing`: detect live Ollama, prefer active loaded model from `/api/ps`
         - `Fallback`: use OpenRouter when Ollama is unavailable
-        - `Now`: DOCX ingestion, table extraction, saved exact-search index
+        - `Now`: DOCX ingestion, exact/hybrid retrieval, bounded agent search
         """
     )
 
     _render_persistent_search(provider, selection)
+    _render_agent_search(provider, selection)
     _render_docx_ingestion()
 
 
