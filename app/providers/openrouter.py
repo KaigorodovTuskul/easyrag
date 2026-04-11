@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
+
 from app.core.config import AppConfig
-from app.core.models import EmbeddingResult, GenerationResult, ModelInfo, ProviderSelection
+from app.core.models import EmbeddingResult, GenerationResult, ImageInput, ModelInfo, ProviderSelection
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.http import HttpJsonClient
 
@@ -18,10 +20,10 @@ class OpenRouterProvider(BaseProvider):
 
     def list_models(self) -> list[ModelInfo]:
         if not self.config.openrouter_api_key:
-            return [
-                ModelInfo(name=self.config.openrouter_model),
-                ModelInfo(name=self.config.openrouter_embed_model),
-            ]
+            models = [self.config.openrouter_model, self.config.openrouter_embed_model]
+            if self.config.openrouter_vision_model:
+                models.append(self.config.openrouter_vision_model)
+            return [ModelInfo(name=name) for name in dict.fromkeys(models) if name]
 
         payload = self.client.get_json("/models")
         items = payload.get("data", [])
@@ -45,6 +47,7 @@ class OpenRouterProvider(BaseProvider):
                 reason="OPENROUTER_API_KEY is not set",
                 chat_model=self.config.openrouter_model,
                 embed_model=self.config.openrouter_embed_model,
+                vision_model=self.config.openrouter_vision_model,
                 available_models=self.list_models(),
                 active_model=None,
             )
@@ -60,6 +63,7 @@ class OpenRouterProvider(BaseProvider):
             reason="Configured OpenRouter fallback",
             chat_model=self.config.openrouter_model,
             embed_model=self.config.openrouter_embed_model,
+            vision_model=self.config.openrouter_vision_model,
             available_models=models,
             active_model=None,
         )
@@ -72,6 +76,36 @@ class OpenRouterProvider(BaseProvider):
         payload = {
             "model": resolved_model,
             "messages": [{"role": "user", "content": prompt}],
+        }
+        response = self.client.post_json("/chat/completions", payload)
+        choices = response.get("choices", [])
+        message = choices[0].get("message", {}) if choices else {}
+        return GenerationResult(
+            text=message.get("content", ""),
+            model=resolved_model,
+            raw=response,
+        )
+
+    def generate_with_images(self, prompt: str, images: list[ImageInput], model: str | None = None) -> GenerationResult:
+        if not self.config.openrouter_api_key:
+            raise ProviderError("OPENROUTER_API_KEY is not set")
+        if not images:
+            return self.generate(prompt, model=model)
+
+        resolved_model = model or self.config.openrouter_vision_model or self.config.openrouter_model
+        content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
+        for image in images:
+            encoded = base64.b64encode(image.data).decode("ascii")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{image.mime_type};base64,{encoded}"},
+                }
+            )
+
+        payload = {
+            "model": resolved_model,
+            "messages": [{"role": "user", "content": content}],
         }
         response = self.client.post_json("/chat/completions", payload)
         choices = response.get("choices", [])

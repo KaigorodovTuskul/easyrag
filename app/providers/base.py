@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from app.core.models import EmbeddingResult, GenerationResult, ModelInfo, ProviderSelection
+from app.core.models import EmbeddingResult, GenerationResult, ImageInput, ModelInfo, ProviderSelection
 
 
 class ProviderError(RuntimeError):
@@ -26,6 +26,10 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def generate(self, prompt: str, model: str | None = None) -> GenerationResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def generate_with_images(self, prompt: str, images: list[ImageInput], model: str | None = None) -> GenerationResult:
         raise NotImplementedError
 
     @abstractmethod

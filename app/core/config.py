@@ -23,6 +23,7 @@ class AppConfig:
     ollama_base_url: str
     ollama_default_model: str
     ollama_default_embed_model: str
+    ollama_default_vision_model: str | None
     ollama_tags_path: str
     ollama_ps_path: str
     ollama_control_timeout_seconds: float
@@ -31,8 +32,9 @@ class AppConfig:
     openrouter_base_url: str
     openrouter_model: str
     openrouter_embed_model: str
+    openrouter_vision_model: str | None
     embedding_batch_size: int
-    formula_ocr_backend: str
+    embedding_record_types: tuple[str, ...]
     vector_backend: str
     vector_collection: str
     reranker_enabled: bool
@@ -52,6 +54,7 @@ class AppConfig:
             ollama_base_url=merged.get("OLLAMA_BASE_URL", "http://10.32.2.36:11434").rstrip("/"),
             ollama_default_model=merged.get("OLLAMA_DEFAULT_MODEL", "gemma4:26b"),
             ollama_default_embed_model=merged.get("OLLAMA_DEFAULT_EMBED_MODEL", "qwen3-embedding:8b"),
+            ollama_default_vision_model=_get_optional_str(merged.get("OLLAMA_DEFAULT_VISION_MODEL")),
             ollama_tags_path=merged.get("OLLAMA_TAGS_PATH", "/api/tags"),
             ollama_ps_path=merged.get("OLLAMA_PS_PATH", "/api/ps"),
             ollama_control_timeout_seconds=float(merged.get("OLLAMA_CONTROL_TIMEOUT_SECONDS", "2")),
@@ -60,10 +63,24 @@ class AppConfig:
             openrouter_base_url=merged.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/"),
             openrouter_model=merged.get("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it"),
             openrouter_embed_model=merged.get("OPENROUTER_EMBED_MODEL", "qwen/qwen3-embedding-8b"),
+            openrouter_vision_model=_get_optional_str(merged.get("OPENROUTER_VISION_MODEL")),
             embedding_batch_size=max(1, int(merged.get("EMBEDDING_BATCH_SIZE", "16"))),
-            formula_ocr_backend=merged.get("FORMULA_OCR_BACKEND", "none").strip().lower(),
+            embedding_record_types=_get_csv_tuple(merged.get("EMBEDDING_RECORD_TYPES", "paragraph,table_row")),
             vector_backend=merged.get("VECTOR_BACKEND", "local"),
             vector_collection=merged.get("VECTOR_COLLECTION", "easyrag_chunks"),
             reranker_enabled=_get_bool(merged.get("RERANKER_ENABLED"), default=False),
             trace_agent_steps=_get_bool(merged.get("TRACE_AGENT_STEPS"), default=True),
         )
+
+
+def _get_csv_tuple(raw_value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in raw_value.split(",") if item.strip())
+
+
+def _get_optional_str(raw_value: str | None) -> str | None:
+    if raw_value is None:
+        return None
+    normalized = raw_value.strip()
+    if not normalized or normalized.lower() == "none":
+        return None
+    return normalized

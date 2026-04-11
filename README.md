@@ -50,25 +50,24 @@ APP_LANGUAGE=ru
 OLLAMA_BASE_URL=http://10.32.2.36:11434
 OLLAMA_DEFAULT_MODEL=gemma4:26b
 OLLAMA_DEFAULT_EMBED_MODEL=qwen3-embedding:8b
+OLLAMA_DEFAULT_VISION_MODEL=
 OLLAMA_CONTROL_TIMEOUT_SECONDS=2
 OLLAMA_INFERENCE_TIMEOUT_SECONDS=300
 
 OPENROUTER_API_KEY=
 OPENROUTER_MODEL=google/gemma-4-26b-a4b-it
 OPENROUTER_EMBED_MODEL=qwen/qwen3-embedding-8b
+OPENROUTER_VISION_MODEL=
 
 EMBEDDING_BATCH_SIZE=16
-FORMULA_OCR_BACKEND=none
+EMBEDDING_RECORD_TYPES=paragraph,table_row
 ```
 
 `APP_LANGUAGE` supports `ru` and `en`. The language can also be switched in the UI.
-`FORMULA_OCR_BACKEND=pix2tex` enables optional image formula OCR when `pix2tex` and its image dependencies are installed. Without it, image formulas are indexed as unresolved formula images.
+`EMBEDDING_RECORD_TYPES` controls which record types get vector embeddings. The default skips table cells because exact/BM25 search already covers them and table rows preserve enough semantic context for most table questions. Use `paragraph,table_row,table_cell` if you need the previous broader embedding behavior.
+`OLLAMA_DEFAULT_VISION_MODEL` and `OPENROUTER_VISION_MODEL` are optional defaults for DOCX formula extraction from embedded images. Leave them empty to default to `None` in the UI; when `None` is selected, EasyRAG will try the selected answer model as the vision model.
 
-Optional formula OCR:
-
-```powershell
-python -m pip install -r requirements-formula-ocr.txt
-```
+Formula images are no longer processed by local OCR. EasyRAG now sends embedded DOCX images to the selected multimodal model during indexing and stores the recognized formula text in the search index when extraction succeeds.
 
 ## Commands
 

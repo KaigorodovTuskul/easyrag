@@ -13,12 +13,19 @@ class ModelInfo:
 
 
 @dataclass(slots=True)
+class ImageInput:
+    data: bytes
+    mime_type: str
+
+
+@dataclass(slots=True)
 class ProviderSelection:
     provider_name: str
     reachable: bool
     reason: str
     chat_model: str
     embed_model: str
+    vision_model: str | None
     available_models: list[ModelInfo] = field(default_factory=list)
     active_model: str | None = None
 

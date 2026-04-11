@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from io import BytesIO
 from pathlib import Path
 import re
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from docx import Document
 from docx.document import Document as DocxDocument
@@ -12,9 +12,6 @@ from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
-
-from app.ingestion.formula_ocr import recognize_formula_image
-
 
 @dataclass(slots=True)
 class ParagraphElement:
@@ -61,7 +58,11 @@ class ParsedDocx:
         return asdict(self)
 
 
-def parse_docx_bytes(source_name: str, content: bytes, formula_ocr_backend: str = "none") -> ParsedDocx:
+def parse_docx_bytes(
+    source_name: str,
+    content: bytes,
+    formula_image_recognizer: Callable[[bytes, str], str | None] | None = None,
+) -> ParsedDocx:
     document = Document(BytesIO(content))
     section_path: list[str] = []
     paragraphs: list[ParagraphElement] = []
@@ -71,7 +72,7 @@ def parse_docx_bytes(source_name: str, content: bytes, formula_ocr_backend: str 
 
     for block in _iter_block_items(document):
         if isinstance(block, Paragraph):
-            text = _normalize_paragraph_text(block, formula_ocr_backend)
+            text = _normalize_paragraph_text(block, formula_image_recognizer)
             if not text:
                 continue
 
@@ -103,7 +104,7 @@ def parse_docx_bytes(source_name: str, content: bytes, formula_ocr_backend: str 
                 row_cells: list[TableCellElement] = []
 
                 for col_idx, cell in enumerate(row.cells):
-                    cell_text = _normalize_cell_text(cell, formula_ocr_backend)
+                    cell_text = _normalize_cell_text(cell, formula_image_recognizer)
                     values.append(cell_text)
                     row_cells.append(TableCellElement(row_index=row_idx, col_index=col_idx, text=cell_text))
 
@@ -149,16 +150,22 @@ def _iter_block_items(parent: DocxDocument | _Cell) -> Iterator[Paragraph | Tabl
             yield Table(child, parent)
 
 
-def _normalize_cell_text(cell: _Cell, formula_ocr_backend: str) -> str:
-    parts = [_normalize_paragraph_text(paragraph, formula_ocr_backend) for paragraph in cell.paragraphs]
+def _normalize_cell_text(
+    cell: _Cell,
+    formula_image_recognizer: Callable[[bytes, str], str | None] | None,
+) -> str:
+    parts = [_normalize_paragraph_text(paragraph, formula_image_recognizer) for paragraph in cell.paragraphs]
     parts = [part for part in parts if part]
     return "\n".join(parts)
 
 
-def _normalize_paragraph_text(paragraph: Paragraph, formula_ocr_backend: str) -> str:
+def _normalize_paragraph_text(
+    paragraph: Paragraph,
+    formula_image_recognizer: Callable[[bytes, str], str | None] | None,
+) -> str:
     parts = [paragraph.text.strip()]
     parts.extend(_extract_omml_formulas(paragraph))
-    parts.extend(_extract_formula_image_markers(paragraph, formula_ocr_backend))
+    parts.extend(_extract_formula_image_markers(paragraph, formula_image_recognizer))
     return "\n".join(part for part in parts if part).strip()
 
 
@@ -173,14 +180,17 @@ def _extract_omml_formulas(paragraph: Paragraph) -> list[str]:
     return formulas
 
 
-def _extract_formula_image_markers(paragraph: Paragraph, formula_ocr_backend: str) -> list[str]:
+def _extract_formula_image_markers(
+    paragraph: Paragraph,
+    formula_image_recognizer: Callable[[bytes, str], str | None] | None,
+) -> list[str]:
     markers: list[str] = []
     for image_index, relationship_id in enumerate(paragraph._p.xpath(".//a:blip/@r:embed"), start=1):
         image_part = paragraph.part.related_parts.get(relationship_id)
         filename = Path(str(image_part.partname)).name if image_part is not None else f"image-{image_index}"
-        recognized = recognize_formula_image(image_part.blob, filename, backend=formula_ocr_backend) if image_part is not None else None
+        recognized = formula_image_recognizer(image_part.blob, filename) if image_part is not None and formula_image_recognizer else None
         if recognized:
-            markers.append(f"[FORMULA_OCR: {recognized}]")
+            markers.append(f"[FORMULA_VISION: {recognized}]")
         else:
             markers.append(f"[FORMULA_IMAGE: {filename}; not recognized]")
     return markers

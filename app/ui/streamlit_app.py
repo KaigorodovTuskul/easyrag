@@ -7,11 +7,12 @@ import time
 from app.agents.answer import build_answer_context
 from app.agents.code_lookup import try_build_code_lookup_answer
 from app.agents.controller import run_agent_retrieval
-from app.agents.embedding_indexer import build_embedding_index
+from app.agents.embedding_indexer import build_embedding_index, select_embedding_records
 from app.agents.norm_lookup import try_build_norm_lookup_answer
 from app.core.config import AppConfig
 from app.core.i18n import SUPPORTED_LANGUAGES, normalize_language, t
 from app.eval.runner import run_eval
+from app.ingestion.formula_vision import recognize_formula_image
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.ollama import OllamaProvider
 from app.providers.openrouter import OpenRouterProvider
@@ -76,10 +77,28 @@ def _render_provider_settings(config: AppConfig, language: str):
     provider, selection = _resolve_provider(config, mode, language)
     available_model_names = [model.name for model in selection.available_models]
 
-    chat_options = _model_options(available_model_names, selection.chat_model)
-    embed_options = _model_options(available_model_names, selection.embed_model)
-    selection.chat_model = st.sidebar.selectbox(t("chat_model.label", language), chat_options, index=chat_options.index(selection.chat_model))
-    selection.embed_model = st.sidebar.selectbox(t("embed_model.label", language), embed_options, index=embed_options.index(selection.embed_model))
+    selection.chat_model = _render_model_picker(
+        label=t("chat_model.label", language),
+        custom_label=t("model.manual_label", language, target=t("chat_model.label", language).lower()),
+        available=available_model_names,
+        current=selection.chat_model,
+        key_prefix="chat_model",
+    )
+    selection.embed_model = _render_model_picker(
+        label=t("embed_model.label", language),
+        custom_label=t("model.manual_label", language, target=t("embed_model.label", language).lower()),
+        available=available_model_names,
+        current=selection.embed_model,
+        key_prefix="embed_model",
+    )
+    selection.vision_model = _render_model_picker(
+        label=t("vision_model.label", language),
+        custom_label=t("model.manual_label", language, target=t("vision_model.label", language).lower()),
+        available=available_model_names,
+        current=selection.vision_model,
+        key_prefix="vision_model",
+        allow_none=True,
+    )
 
     with st.sidebar.expander(t("provider_status.title", language)):
         st.write(
@@ -87,6 +106,7 @@ def _render_provider_settings(config: AppConfig, language: str):
                 t("provider_status.provider", language): provider.name,
                 t("provider_status.reachable", language): selection.reachable,
                 t("provider_status.active_model", language): selection.active_model,
+                t("provider_status.vision_model", language): selection.vision_model or "None",
                 t("provider_status.reason", language): _localize_reason(selection.reason, language),
             }
         )
@@ -111,10 +131,65 @@ def _resolve_provider(config: AppConfig, mode: str, language: str | None = None)
     return ProviderRouter(config).resolve()
 
 
-def _model_options(available: list[str], current: str) -> list[str]:
-    options = [current]
+def _model_options(available: list[str], current: str | None) -> list[str]:
+    options = [current] if current else []
     options.extend(name for name in available if name and name not in options)
     return options
+
+
+def _render_model_picker(
+    label: str,
+    custom_label: str,
+    available: list[str],
+    current: str | None,
+    key_prefix: str,
+    allow_none: bool = False,
+) -> str | None:
+    manual_option = "__manual__"
+    none_option = "__none__"
+    options = _model_options(available, current)
+    choice_options = ([none_option] if allow_none else []) + options + [manual_option]
+
+    if current and current not in options:
+        selected_choice = manual_option
+    elif current is None and allow_none:
+        selected_choice = none_option
+    elif current:
+        selected_choice = current
+    elif options:
+        selected_choice = options[0]
+    else:
+        selected_choice = manual_option if not allow_none else none_option
+
+    selected = st.sidebar.selectbox(
+        label,
+        choice_options,
+        index=choice_options.index(selected_choice),
+        format_func=lambda value: _format_model_option(value, st.session_state.get("language", "ru")),
+        key=f"{key_prefix}_select",
+    )
+
+    custom_default = current if current and current not in options else ""
+    custom_value = st.sidebar.text_input(custom_label, value=custom_default, key=f"{key_prefix}_custom")
+    if custom_value.strip():
+        return custom_value.strip()
+    if allow_none and selected == none_option:
+        return None
+    if selected == manual_option:
+        if current:
+            return current
+        if options:
+            return options[0]
+        return None
+    return selected
+
+
+def _format_model_option(value: str, language: str) -> str:
+    if value == "__none__":
+        return "None"
+    if value == "__manual__":
+        return t("model.manual_option", language)
+    return value
 
 
 def _localize_reason(reason: str, language: str) -> str:
@@ -205,21 +280,19 @@ def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str 
 def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: str, prompt: str, language: str) -> str:
     records = load_workspace_records(workspace_id)
     embeddings = load_workspace_embeddings(workspace_id)
-    effective_query = _build_effective_query(prompt)
-    st.session_state["last_effective_query"] = effective_query
-
-    agent_result = run_agent_retrieval(
+    effective_query, agent_result, query_resolution = _resolve_query_with_context(
         provider=provider,
         records=records,
-        embedding_records=embeddings,
-        query=effective_query,
+        embeddings=embeddings,
+        prompt=prompt,
         embed_model=embed_model,
-        limit=12,
     )
+    st.session_state["last_effective_query"] = effective_query
 
     st.session_state["last_debug"] = {
         "query": prompt,
         "effective_query": effective_query,
+        "query_resolution": query_resolution,
         "workspace_id": workspace_id,
         "query_type": agent_result.query_type,
         "mode": agent_result.mode,
@@ -241,7 +314,17 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
         st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
         return norm_answer.answer
 
-    answer_context = build_answer_context(effective_query, agent_result.results, evidence=agent_result.evidence, language=language)
+    if not agent_result.evidence.ok:
+        st.session_state["last_debug"]["answer_mode"] = "weak_evidence_refusal"
+        return t("no_results", language)
+
+    answer_context = build_answer_context(
+        effective_query,
+        agent_result.results,
+        max_results=_answer_context_limit(agent_result.results),
+        evidence=agent_result.evidence,
+        language=language,
+    )
     st.session_state["last_debug"]["citations"] = answer_context.citations
 
     try:
@@ -254,20 +337,43 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     return generated.text or t("empty_answer", language)
 
 
-def _build_effective_query(prompt: str) -> str:
+def _resolve_query_with_context(provider, records: list[SearchRecord], embeddings, prompt: str, embed_model: str):
+    standalone_result = run_agent_retrieval(
+        provider=provider,
+        records=records,
+        embedding_records=embeddings,
+        query=prompt,
+        embed_model=embed_model,
+        limit=12,
+    )
+
     target = _extract_query_target(prompt)
     if target:
         st.session_state["last_user_query"] = prompt
         st.session_state["last_query_target"] = target
-        return prompt
+        return prompt, standalone_result, "standalone_explicit_target"
+
+    if standalone_result.results:
+        st.session_state["last_user_query"] = prompt
+        st.session_state.pop("last_query_target", None)
+        return prompt, standalone_result, "standalone_found_results"
 
     previous_user_message = st.session_state.get("last_user_query") or _previous_user_message()
     if not previous_user_message:
         st.session_state["last_user_query"] = prompt
-        return prompt
+        return prompt, standalone_result, "standalone_no_previous_context"
 
     st.session_state["last_user_query"] = previous_user_message
-    return f"{previous_user_message}\n{t('clarification.prefix', st.session_state.get('language', 'ru'))}: {prompt}"
+    contextual_query = f"{previous_user_message}\n{t('clarification.prefix', st.session_state.get('language', 'ru'))}: {prompt}"
+    contextual_result = run_agent_retrieval(
+        provider=provider,
+        records=records,
+        embedding_records=embeddings,
+        query=contextual_query,
+        embed_model=embed_model,
+        limit=12,
+    )
+    return contextual_query, contextual_result, "contextual_after_empty_standalone"
 
 
 def _previous_user_message() -> str | None:
@@ -287,6 +393,12 @@ def _extract_query_target(prompt: str) -> str | None:
         return numeric_match.group(0)
 
     return None
+
+
+def _answer_context_limit(results: list) -> int:
+    if any(result.record.record_type in {"table_cell", "table_row"} for result in results[:12]):
+        return 12
+    return 6
 
 
 def _clear_chat_context(workspace_id: str) -> None:
@@ -310,7 +422,17 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
 
     content = uploaded_file.getvalue()
     file_hash = file_hash_for_content(content)
-    workspace_id = workspace_id_for(uploaded_file.name, _workspace_cache_hash(content, config))
+    effective_vision_model = selection.vision_model or selection.chat_model
+    workspace_id = workspace_id_for(
+        uploaded_file.name,
+        _workspace_cache_hash(
+            content,
+            config,
+            provider_name=provider.name,
+            chat_model=selection.chat_model,
+            vision_model=effective_vision_model,
+        ),
+    )
     info = load_workspace_info(workspace_id)
 
     if info and info.embedding_count > 0 and info.embed_model == selection.embed_model:
@@ -320,21 +442,39 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
     st.sidebar.info(t("workspace_preparing", language))
     parse_progress = st.sidebar.progress(0, text=t("indexing.progress", language))
 
-    parsed = parse_docx_bytes(uploaded_file.name, content, formula_ocr_backend=config.formula_ocr_backend)
+    parsed = parse_docx_bytes(
+        uploaded_file.name,
+        content,
+        formula_image_recognizer=lambda blob, filename: recognize_formula_image(
+            provider,
+            blob,
+            filename,
+            model=effective_vision_model,
+        ),
+    )
     save_uploaded_docx(uploaded_file.name, content)
     save_parsed_payload(uploaded_file.name, parsed.to_dict())
     records = build_search_records(parsed)
     save_workspace_records(workspace_id, parsed.source_name, file_hash, records)
     parse_progress.progress(1.0, text=t("indexing.done", language, records=len(records), tokens=_records_tokens(records)))
 
-    _build_workspace_embeddings(workspace_id, provider, selection, records, config.embedding_batch_size, language)
+    _build_workspace_embeddings(workspace_id, provider, selection, records, config, language)
     st.session_state["messages"] = []
     save_conversation(workspace_id, [])
     return workspace_id
 
 
-def _workspace_cache_hash(content: bytes, config: AppConfig) -> str:
-    parser_signature = f"docx-parser:formula-v1:ocr={config.formula_ocr_backend}".encode("utf-8")
+def _workspace_cache_hash(
+    content: bytes,
+    config: AppConfig,
+    provider_name: str,
+    chat_model: str,
+    vision_model: str | None,
+) -> str:
+    parser_signature = (
+        f"docx-parser:formula-v3:provider={provider_name}:chat={chat_model}:vision={vision_model or 'none'}:"
+        f"embedding-types={','.join(config.embedding_record_types)}"
+    ).encode("utf-8")
     return file_hash_for_content(content + parser_signature)
 
 
@@ -343,7 +483,7 @@ def _build_workspace_embeddings(
     provider,
     selection,
     records: list[SearchRecord],
-    batch_size: int,
+    config: AppConfig,
     language: str,
 ) -> None:
     info = load_workspace_info(workspace_id)
@@ -351,7 +491,7 @@ def _build_workspace_embeddings(
         st.sidebar.success(t("embeddings.cached", language))
         return
 
-    selected = [record for record in records if record.record_type != "table" and record.text.strip()]
+    selected = select_embedding_records(records, record_types=config.embedding_record_types)
     total_records = len(selected)
     total_tokens = sum(estimate_tokens(record.text) for record in selected)
     progress = st.sidebar.progress(0, text=t("embeddings.progress", language, index=0, total=total_records, processed=0, tokens=total_tokens))
@@ -374,7 +514,8 @@ def _build_workspace_embeddings(
             provider=provider,
             records=records,
             model=selection.embed_model,
-            batch_size=batch_size,
+            batch_size=config.embedding_batch_size,
+            record_types=config.embedding_record_types,
             progress_callback=on_progress,
         )
         save_workspace_embeddings(workspace_id, embeddings, selection.embed_model)
@@ -405,6 +546,8 @@ def _render_debug(provider_name: str, selection, workspace_id: str | None, langu
                 "provider": provider_name,
                 "chat_model": selection.chat_model,
                 "embed_model": selection.embed_model,
+                "vision_model": selection.vision_model,
+                "effective_vision_model": selection.vision_model or selection.chat_model,
                 "active_model": selection.active_model,
                 "reason": selection.reason,
             }
@@ -421,7 +564,17 @@ def _render_debug(provider_name: str, selection, workspace_id: str | None, langu
                 return
             hit_at_1 = sum(1 for result in results if result.hit_at_1)
             hit_at_3 = sum(1 for result in results if result.hit_at_3)
-            st.write({t("debug.cases", language): len(results), "hit@1": hit_at_1, "hit@3": hit_at_3})
+            hybrid_hit_at_1 = sum(1 for result in results if result.hybrid_hit_at_1)
+            hybrid_hit_at_3 = sum(1 for result in results if result.hybrid_hit_at_3)
+            st.write(
+                {
+                    t("debug.cases", language): len(results),
+                    "exact hit@1": hit_at_1,
+                    "exact hit@3": hit_at_3,
+                    "hybrid hit@1": hybrid_hit_at_1,
+                    "hybrid hit@3": hybrid_hit_at_3,
+                }
+            )
             st.dataframe([asdict(result) for result in results], use_container_width=True, hide_index=True)
 
 

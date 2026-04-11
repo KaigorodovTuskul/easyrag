@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
+
 from app.core.config import AppConfig
-from app.core.models import EmbeddingResult, GenerationResult, ModelInfo, ProviderSelection
+from app.core.models import EmbeddingResult, GenerationResult, ImageInput, ModelInfo, ProviderSelection
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.http import HttpJsonClient
 
@@ -63,6 +65,7 @@ class OllamaProvider(BaseProvider):
             reason=reason,
             chat_model=selected_chat_model,
             embed_model=selected_embed_model,
+            vision_model=self._pick_vision_model(available_names),
             available_models=available_models,
             active_model=active_model,
         )
@@ -77,6 +80,27 @@ class OllamaProvider(BaseProvider):
         response = self.client.post_json("/api/generate", payload)
         return GenerationResult(
             text=response.get("response", ""),
+            model=resolved_model,
+            raw=response,
+        )
+
+    def generate_with_images(self, prompt: str, images: list[ImageInput], model: str | None = None) -> GenerationResult:
+        resolved_model = model or self.resolve_selection().vision_model or self.resolve_selection().chat_model
+        payload = {
+            "model": resolved_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [base64.b64encode(image.data).decode("ascii") for image in images],
+                }
+            ],
+            "stream": False,
+        }
+        response = self.client.post_json("/api/chat", payload)
+        message = response.get("message", {}) if isinstance(response, dict) else {}
+        return GenerationResult(
+            text=message.get("content", ""),
             model=resolved_model,
             raw=response,
         )
@@ -118,3 +142,8 @@ class OllamaProvider(BaseProvider):
         if self.config.ollama_default_embed_model in available_names:
             return self.config.ollama_default_embed_model
         return self.config.ollama_default_embed_model
+
+    def _pick_vision_model(self, available_names: set[str]) -> str | None:
+        if self.config.ollama_default_vision_model in available_names:
+            return self.config.ollama_default_vision_model
+        return self.config.ollama_default_vision_model or None
