@@ -128,13 +128,16 @@ try {{
   $pres = $ppt.Presentations.Add()
   $slide = $pres.Slides.Add(1, 12)
   $shape = $slide.Shapes.AddPicture('{_escape_powershell_path(source_path)}', $false, $true, 0, 0, -1, -1)
-  $slideWidth = [int]$pres.PageSetup.SlideWidth
   $shape.LockAspectRatio = -1
+  $targetWidth = [int][Math]::Max([Math]::Round($shape.Width), 1)
+  $targetHeight = [int][Math]::Max([Math]::Round($shape.Height), 1)
+  $pres.PageSetup.SlideWidth = $targetWidth
+  $pres.PageSetup.SlideHeight = $targetHeight
   $shape.Left = 0
   $shape.Top = 0
-  $shape.Width = $slideWidth
-  $targetHeight = [int][Math]::Max($shape.Height, 1)
-  $slide.Export('{_escape_powershell_path(output_path)}', 'PNG', $slideWidth, $targetHeight)
+  $shape.Width = $targetWidth
+  $shape.Height = $targetHeight
+  $slide.Export('{_escape_powershell_path(output_path)}', 'PNG', $targetWidth, $targetHeight)
 }} finally {{
   if ($pres -ne $null) {{ $pres.Close() }}
   if ($ppt -ne $null) {{ $ppt.Quit() }}
