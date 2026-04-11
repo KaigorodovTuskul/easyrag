@@ -15,6 +15,7 @@ class StoredFormulaImage:
     asset_id: str
     filename: str
     relative_path: str
+    original_filename: str | None = None
 
     @property
     def path(self) -> Path:
@@ -52,6 +53,7 @@ def save_workspace_formula_images(workspace_id: str, assets: list[FormulaImageAs
                 asset_id=asset.asset_id,
                 filename=stored_filename,
                 relative_path=str(target),
+                original_filename=asset.filename,
             )
         )
 
@@ -74,6 +76,7 @@ def load_workspace_formula_images(workspace_id: str) -> dict[str, StoredFormulaI
             asset_id=item["asset_id"],
             filename=item["filename"],
             relative_path=item["relative_path"],
+            original_filename=item.get("original_filename"),
         )
         items[stored.asset_id] = stored
     return items
@@ -88,6 +91,11 @@ def read_formula_image_for_display(item: StoredFormulaImage) -> bytes:
     prepared = prepare_formula_image(raw, item.filename)
     image_bytes = raw if prepared is None else prepared[0]
     return _resize_image_bytes(image_bytes)
+
+
+def is_vector_formula_image(item: StoredFormulaImage) -> bool:
+    source_name = item.original_filename or item.filename
+    return Path(source_name).suffix.lower() in {".wmf", ".emf"}
 
 
 def _resize_image_bytes(image_bytes: bytes, max_width: int = 900) -> bytes:
