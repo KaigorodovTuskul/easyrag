@@ -324,7 +324,7 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     )
     if term_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_term_lookup"
-        return term_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
+        return term_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id, None, agent_result.entity)
 
     if not agent_result.evidence.ok:
         st.session_state["last_debug"]["answer_mode"] = "weak_evidence_refusal"
@@ -716,7 +716,7 @@ def _stream_chunks(text: str):
 
 def _collect_formula_images(results, formula_images_by_id: dict[str, object], query_type: str | None = None, entity: str | None = None, limit: int = 6) -> list[dict]:
     if query_type in {"formula", "norm"} and entity:
-        prioritized = _collect_formula_images_from_paragraph_context(results, formula_images_by_id, limit=limit)
+        prioritized = _collect_formula_images_from_anchor_window(results, formula_images_by_id, before=0, after=3, limit=limit)
         if prioritized:
             return prioritized
 
@@ -737,15 +737,32 @@ def _collect_formula_images(results, formula_images_by_id: dict[str, object], qu
     return collected
 
 
-def _collect_formula_images_from_paragraph_context(results, formula_images_by_id: dict[str, object], limit: int = 6) -> list[dict]:
+def _collect_formula_images_from_anchor_window(
+    results,
+    formula_images_by_id: dict[str, object],
+    before: int = 0,
+    after: int = 3,
+    limit: int = 6,
+) -> list[dict]:
+    anchor = next(
+        (
+            result
+            for result in results
+            if result.record.record_type == "paragraph" and result.record.record_id.startswith("p-")
+        ),
+        None,
+    )
+    if anchor is None:
+        return []
+
+    anchor_number = _paragraph_record_number(anchor.record.record_id)
     paragraph_results = [
         result
         for result in results
-        if result.record.record_type == "paragraph" and result.record.record_id.startswith("p-")
+        if result.record.record_type == "paragraph"
+        and result.record.record_id.startswith("p-")
+        and (anchor_number - before) <= _paragraph_record_number(result.record.record_id) <= (anchor_number + after)
     ]
-    if not paragraph_results:
-        return []
-
     ordered = sorted(paragraph_results, key=lambda item: _paragraph_record_number(item.record.record_id))
     collected: list[dict] = []
     seen: set[str] = set()
