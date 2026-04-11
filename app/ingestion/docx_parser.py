@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 import re
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator
 
 from docx import Document
 from docx.document import Document as DocxDocument
@@ -20,6 +20,7 @@ class ParagraphElement:
     section_path: list[str]
     style: str
     text: str
+    formula_image_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -27,6 +28,7 @@ class TableCellElement:
     row_index: int
     col_index: int
     text: str
+    formula_image_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -34,6 +36,7 @@ class TableRowElement:
     row_index: int
     values: list[str]
     cells: list[TableCellElement] = field(default_factory=list)
+    formula_image_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -47,40 +50,96 @@ class TableElement:
 
 
 @dataclass(slots=True)
+class FormulaImageAsset:
+    asset_id: str
+    filename: str
+    content: bytes = field(repr=False)
+
+
+@dataclass(slots=True)
 class ParsedDocx:
     source_name: str
     paragraph_count: int
     table_count: int
     paragraphs: list[ParagraphElement] = field(default_factory=list)
     tables: list[TableElement] = field(default_factory=list)
+    formula_images: list[FormulaImageAsset] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "source_name": self.source_name,
+            "paragraph_count": self.paragraph_count,
+            "table_count": self.table_count,
+            "paragraphs": [
+                {
+                    "element_id": item.element_id,
+                    "element_type": item.element_type,
+                    "section_path": item.section_path,
+                    "style": item.style,
+                    "text": item.text,
+                    "formula_image_ids": item.formula_image_ids,
+                }
+                for item in self.paragraphs
+            ],
+            "tables": [
+                {
+                    "element_id": table.element_id,
+                    "element_type": table.element_type,
+                    "section_path": table.section_path,
+                    "row_count": table.row_count,
+                    "col_count": table.col_count,
+                    "rows": [
+                        {
+                            "row_index": row.row_index,
+                            "values": row.values,
+                            "formula_image_ids": row.formula_image_ids,
+                            "cells": [
+                                {
+                                    "row_index": cell.row_index,
+                                    "col_index": cell.col_index,
+                                    "text": cell.text,
+                                    "formula_image_ids": cell.formula_image_ids,
+                                }
+                                for cell in row.cells
+                            ],
+                        }
+                        for row in table.rows
+                    ],
+                }
+                for table in self.tables
+            ],
+            "formula_images": [
+                {
+                    "asset_id": asset.asset_id,
+                    "filename": asset.filename,
+                }
+                for asset in self.formula_images
+            ],
+        }
 
 
-def parse_docx_bytes(
-    source_name: str,
-    content: bytes,
-    formula_image_recognizer: Callable[[bytes, str], str | None] | None = None,
-) -> ParsedDocx:
+def parse_docx_bytes(source_name: str, content: bytes) -> ParsedDocx:
     document = Document(BytesIO(content))
     section_path: list[str] = []
     paragraphs: list[ParagraphElement] = []
     tables: list[TableElement] = []
+    formula_images: list[FormulaImageAsset] = []
     paragraph_index = 0
     table_index = 0
+    formula_image_index = 0
 
     for block in _iter_block_items(document):
         if isinstance(block, Paragraph):
-            text = _normalize_paragraph_text(block, formula_image_recognizer)
-            if not text:
+            content_block, formula_image_index, new_assets = _normalize_paragraph_text(block, formula_image_index)
+            formula_images.extend(new_assets)
+            if not content_block.text:
                 continue
 
             style_name = block.style.name if block.style is not None else "Normal"
-            heading_level = _detect_heading_level(style_name, text, paragraph_index)
+            heading_level = _detect_heading_level(style_name, content_block.text, paragraph_index)
             if heading_level is not None:
                 section_path = section_path[: max(heading_level - 1, 0)]
-                section_path.append(text)
+                section_path.append(content_block.text)
 
             paragraph_index += 1
             paragraphs.append(
@@ -89,7 +148,8 @@ def parse_docx_bytes(
                     element_type="paragraph",
                     section_path=section_path[:],
                     style=style_name,
-                    text=text,
+                    text=content_block.text,
+                    formula_image_ids=content_block.formula_image_ids,
                 )
             )
             continue
@@ -102,11 +162,21 @@ def parse_docx_bytes(
             for row_idx, row in enumerate(block.rows):
                 values: list[str] = []
                 row_cells: list[TableCellElement] = []
+                row_formula_image_ids: list[str] = []
 
                 for col_idx, cell in enumerate(row.cells):
-                    cell_text = _normalize_cell_text(cell, formula_image_recognizer)
-                    values.append(cell_text)
-                    row_cells.append(TableCellElement(row_index=row_idx, col_index=col_idx, text=cell_text))
+                    cell_content, formula_image_index, new_assets = _normalize_cell_text(cell, formula_image_index)
+                    formula_images.extend(new_assets)
+                    values.append(cell_content.text)
+                    row_formula_image_ids.extend(cell_content.formula_image_ids)
+                    row_cells.append(
+                        TableCellElement(
+                            row_index=row_idx,
+                            col_index=col_idx,
+                            text=cell_content.text,
+                            formula_image_ids=cell_content.formula_image_ids,
+                        )
+                    )
 
                 col_count = max(col_count, len(values))
                 table_rows.append(
@@ -114,6 +184,7 @@ def parse_docx_bytes(
                         row_index=row_idx,
                         values=values,
                         cells=row_cells,
+                        formula_image_ids=list(dict.fromkeys(row_formula_image_ids)),
                     )
                 )
 
@@ -134,6 +205,7 @@ def parse_docx_bytes(
         table_count=len(tables),
         paragraphs=paragraphs,
         tables=tables,
+        formula_images=formula_images,
     )
 
 
@@ -150,23 +222,41 @@ def _iter_block_items(parent: DocxDocument | _Cell) -> Iterator[Paragraph | Tabl
             yield Table(child, parent)
 
 
-def _normalize_cell_text(
-    cell: _Cell,
-    formula_image_recognizer: Callable[[bytes, str], str | None] | None,
-) -> str:
-    parts = [_normalize_paragraph_text(paragraph, formula_image_recognizer) for paragraph in cell.paragraphs]
-    parts = [part for part in parts if part]
-    return "\n".join(parts)
+@dataclass(slots=True)
+class NormalizedContent:
+    text: str
+    formula_image_ids: list[str] = field(default_factory=list)
 
 
-def _normalize_paragraph_text(
-    paragraph: Paragraph,
-    formula_image_recognizer: Callable[[bytes, str], str | None] | None,
-) -> str:
+def _normalize_cell_text(cell: _Cell, formula_image_index: int) -> tuple[NormalizedContent, int, list[FormulaImageAsset]]:
+    texts: list[str] = []
+    formula_image_ids: list[str] = []
+    assets: list[FormulaImageAsset] = []
+    current_index = formula_image_index
+
+    for paragraph in cell.paragraphs:
+        content, current_index, new_assets = _normalize_paragraph_text(paragraph, current_index)
+        if content.text:
+            texts.append(content.text)
+        formula_image_ids.extend(content.formula_image_ids)
+        assets.extend(new_assets)
+
+    return (
+        NormalizedContent(text="\n".join(texts), formula_image_ids=list(dict.fromkeys(formula_image_ids))),
+        current_index,
+        assets,
+    )
+
+
+def _normalize_paragraph_text(paragraph: Paragraph, formula_image_index: int) -> tuple[NormalizedContent, int, list[FormulaImageAsset]]:
     parts = [paragraph.text.strip()]
     parts.extend(_extract_omml_formulas(paragraph))
-    parts.extend(_extract_formula_image_markers(paragraph, formula_image_recognizer))
-    return "\n".join(part for part in parts if part).strip()
+    image_markers, formula_image_ids, next_index, assets = _extract_formula_image_markers(paragraph, formula_image_index)
+    parts.extend(image_markers)
+    return NormalizedContent(
+        text="\n".join(part for part in parts if part).strip(),
+        formula_image_ids=formula_image_ids,
+    ), next_index, assets
 
 
 def _extract_omml_formulas(paragraph: Paragraph) -> list[str]:
@@ -182,18 +272,22 @@ def _extract_omml_formulas(paragraph: Paragraph) -> list[str]:
 
 def _extract_formula_image_markers(
     paragraph: Paragraph,
-    formula_image_recognizer: Callable[[bytes, str], str | None] | None,
-) -> list[str]:
+    formula_image_index: int,
+) -> tuple[list[str], list[str], int, list[FormulaImageAsset]]:
     markers: list[str] = []
+    formula_image_ids: list[str] = []
+    assets: list[FormulaImageAsset] = []
+    current_index = formula_image_index
     for image_index, relationship_id in enumerate(paragraph._p.xpath(".//a:blip/@r:embed"), start=1):
         image_part = paragraph.part.related_parts.get(relationship_id)
         filename = Path(str(image_part.partname)).name if image_part is not None else f"image-{image_index}"
-        recognized = formula_image_recognizer(image_part.blob, filename) if image_part is not None and formula_image_recognizer else None
-        if recognized:
-            markers.append(f"[FORMULA_VISION: {recognized}]")
-        else:
-            markers.append(f"[FORMULA_IMAGE: {filename}; not recognized]")
-    return markers
+        current_index += 1
+        asset_id = f"formula-image-{current_index}"
+        formula_image_ids.append(asset_id)
+        markers.append(f"[FORMULA_IMAGE: {asset_id}; {filename}]")
+        if image_part is not None:
+            assets.append(FormulaImageAsset(asset_id=asset_id, filename=filename, content=image_part.blob))
+    return markers, formula_image_ids, current_index, assets
 
 
 def _omml_to_text(element) -> str:

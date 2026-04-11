@@ -12,7 +12,6 @@ from app.agents.norm_lookup import try_build_norm_lookup_answer
 from app.core.config import AppConfig
 from app.core.i18n import SUPPORTED_LANGUAGES, normalize_language, t
 from app.eval.runner import run_eval
-from app.ingestion.formula_vision import recognize_formula_image
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.ollama import OllamaProvider
 from app.providers.openrouter import OpenRouterProvider
@@ -20,6 +19,7 @@ from app.providers.router import ProviderRouter
 from app.retrieval.records import SearchRecord, build_search_records
 from app.storage.conversations import clear_conversation, load_conversation, save_conversation
 from app.storage.files import save_parsed_payload, save_uploaded_docx
+from app.storage.formula_images import load_workspace_formula_images, save_workspace_formula_images
 from app.storage.workspaces import (
     estimate_tokens,
     file_hash_for_content,
@@ -258,6 +258,7 @@ def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str 
     for message in st.session_state["messages"]:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            _render_formula_images(message.get("formula_images"))
 
     prompt = st.chat_input(t("chat.placeholder", language))
     if not prompt:
@@ -270,16 +271,21 @@ def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str 
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        answer = _answer_question(provider, chat_model, embed_model, workspace_id, prompt, language)
+        answer, formula_images = _answer_question(provider, chat_model, embed_model, workspace_id, prompt, language)
         st.write_stream(_stream_text(answer))
+        _render_formula_images(formula_images)
 
-    st.session_state["messages"].append({"role": "assistant", "content": answer})
+    assistant_message = {"role": "assistant", "content": answer}
+    if formula_images:
+        assistant_message["formula_images"] = formula_images
+    st.session_state["messages"].append(assistant_message)
     save_conversation(workspace_id, st.session_state["messages"])
 
 
-def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: str, prompt: str, language: str) -> str:
+def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: str, prompt: str, language: str) -> tuple[str, list[dict]]:
     records = load_workspace_records(workspace_id)
     embeddings = load_workspace_embeddings(workspace_id)
+    formula_images_by_id = load_workspace_formula_images(workspace_id)
     effective_query, agent_result, query_resolution = _resolve_query_with_context(
         provider=provider,
         records=records,
@@ -302,21 +308,21 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     }
 
     if not agent_result.results:
-        return t("no_results", language)
+        return t("no_results", language), []
 
     code_answer = try_build_code_lookup_answer(effective_query, agent_result.results, language=language)
     if code_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
-        return code_answer.answer
+        return code_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id)
 
     norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results, language=language)
     if norm_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
-        return norm_answer.answer
+        return norm_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id)
 
     if not agent_result.evidence.ok:
         st.session_state["last_debug"]["answer_mode"] = "weak_evidence_refusal"
-        return t("no_results", language)
+        return t("no_results", language), _collect_formula_images(agent_result.results, formula_images_by_id)
 
     answer_context = build_answer_context(
         effective_query,
@@ -330,11 +336,11 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     try:
         generated = provider.generate(answer_context.prompt, model=chat_model)
     except ProviderError as exc:
-        return t("model_unavailable", language, error=exc)
+        return t("model_unavailable", language, error=exc), _collect_formula_images(agent_result.results, formula_images_by_id)
     except Exception as exc:
-        return t("answer_failed", language, error=exc)
+        return t("answer_failed", language, error=exc), _collect_formula_images(agent_result.results, formula_images_by_id)
 
-    return generated.text or t("empty_answer", language)
+    return (generated.text or t("empty_answer", language)), _collect_formula_images(agent_result.results, formula_images_by_id)
 
 
 def _resolve_query_with_context(provider, records: list[SearchRecord], embeddings, prompt: str, embed_model: str):
@@ -422,15 +428,11 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
 
     content = uploaded_file.getvalue()
     file_hash = file_hash_for_content(content)
-    effective_vision_model = selection.vision_model or selection.chat_model
     workspace_id = workspace_id_for(
         uploaded_file.name,
         _workspace_cache_hash(
             content,
             config,
-            provider_name=provider.name,
-            chat_model=selection.chat_model,
-            vision_model=effective_vision_model,
         ),
     )
     info = load_workspace_info(workspace_id)
@@ -445,15 +447,10 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
     parsed = parse_docx_bytes(
         uploaded_file.name,
         content,
-        formula_image_recognizer=lambda blob, filename: recognize_formula_image(
-            provider,
-            blob,
-            filename,
-            model=effective_vision_model,
-        ),
     )
     save_uploaded_docx(uploaded_file.name, content)
     save_parsed_payload(uploaded_file.name, parsed.to_dict())
+    save_workspace_formula_images(workspace_id, parsed.formula_images)
     records = build_search_records(parsed)
     save_workspace_records(workspace_id, parsed.source_name, file_hash, records)
     parse_progress.progress(1.0, text=t("indexing.done", language, records=len(records), tokens=_records_tokens(records)))
@@ -467,12 +464,9 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
 def _workspace_cache_hash(
     content: bytes,
     config: AppConfig,
-    provider_name: str,
-    chat_model: str,
-    vision_model: str | None,
 ) -> str:
     parser_signature = (
-        f"docx-parser:formula-v3:provider={provider_name}:chat={chat_model}:vision={vision_model or 'none'}:"
+        "docx-parser:formula-v4:assets-only:"
         f"embedding-types={','.join(config.embedding_record_types)}"
     ).encode("utf-8")
     return file_hash_for_content(content + parser_signature)
@@ -547,7 +541,6 @@ def _render_debug(provider_name: str, selection, workspace_id: str | None, langu
                 "chat_model": selection.chat_model,
                 "embed_model": selection.embed_model,
                 "vision_model": selection.vision_model,
-                "effective_vision_model": selection.vision_model or selection.chat_model,
                 "active_model": selection.active_model,
                 "reason": selection.reason,
             }
@@ -614,6 +607,36 @@ def _stream_chunks(text: str):
             buffer = ""
     if buffer:
         yield buffer
+
+
+def _collect_formula_images(results, formula_images_by_id: dict[str, object], limit: int = 6) -> list[dict]:
+    collected: list[dict] = []
+    seen: set[str] = set()
+    for result in results:
+        asset_ids = result.record.metadata.get("formula_image_ids", [])
+        if not isinstance(asset_ids, list):
+            continue
+        for asset_id in asset_ids:
+            if asset_id in seen or asset_id not in formula_images_by_id:
+                continue
+            asset = formula_images_by_id[asset_id]
+            collected.append({"asset_id": asset.asset_id, "filename": asset.filename, "path": asset.relative_path})
+            seen.add(asset_id)
+            if len(collected) >= limit:
+                return collected
+    return collected
+
+
+def _render_formula_images(formula_images: list[dict] | None) -> None:
+    if not formula_images:
+        return
+    for item in formula_images:
+        path = item.get("path")
+        filename = item.get("filename", "formula")
+        if not path:
+            continue
+        st.caption(f"Формула как изображение: {filename}")
+        st.image(path)
 
 
 if __name__ == "__main__":

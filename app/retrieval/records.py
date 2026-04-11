@@ -13,7 +13,7 @@ class SearchRecord:
     record_type: str
     section_path: list[str]
     text: str
-    metadata: dict[str, str | int]
+    metadata: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -41,7 +41,10 @@ def build_search_records(parsed: ParsedDocx) -> list[SearchRecord]:
                 record_type="paragraph",
                 section_path=paragraph.section_path,
                 text=paragraph.text,
-                metadata={"style": paragraph.style},
+                metadata={
+                    "style": paragraph.style,
+                    "formula_image_ids": paragraph.formula_image_ids,
+                },
             )
         )
 
@@ -57,6 +60,7 @@ def build_search_records(parsed: ParsedDocx) -> list[SearchRecord]:
                 metadata={
                     "row_count": table.row_count,
                     "col_count": table.col_count,
+                    "formula_image_ids": list(dict.fromkeys(asset_id for row in table.rows for asset_id in row.formula_image_ids)),
                 },
             )
         )
@@ -74,6 +78,7 @@ def build_search_records(parsed: ParsedDocx) -> list[SearchRecord]:
                     metadata={
                         "table_id": table.element_id,
                         "row_index": row.row_index,
+                        "formula_image_ids": row.formula_image_ids,
                     },
                 )
             )
@@ -97,6 +102,7 @@ def build_search_records(parsed: ParsedDocx) -> list[SearchRecord]:
                             "row_index": row.row_index,
                             "col_index": cell_index,
                             "header": header_value,
+                            "formula_image_ids": row.cells[cell_index].formula_image_ids,
                         },
                     )
                 )
