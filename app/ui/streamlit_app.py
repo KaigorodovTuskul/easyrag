@@ -9,6 +9,8 @@ from app.agents.code_lookup import try_build_code_lookup_answer
 from app.agents.controller import run_agent_retrieval
 from app.agents.embedding_indexer import build_embedding_index, select_embedding_records
 from app.agents.norm_lookup import try_build_norm_lookup_answer
+from app.agents.query_understanding import QueryUnderstanding, build_query_suggestions
+from app.agents.term_lookup import try_build_term_lookup_answer
 from app.core.config import AppConfig
 from app.core.i18n import SUPPORTED_LANGUAGES, normalize_language, t
 from app.eval.runner import run_eval
@@ -25,6 +27,7 @@ from app.storage.formula_images import (
     read_formula_image_for_display,
     save_workspace_formula_images,
 )
+from app.storage.entities import save_workspace_entities
 from app.storage.workspaces import (
     estimate_tokens,
     file_hash_for_content,
@@ -275,11 +278,13 @@ def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str 
 def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: str, prompt: str, language: str) -> tuple[str, list[dict]]:
     records = load_workspace_records(workspace_id)
     embeddings = load_workspace_embeddings(workspace_id)
+    entities = save_workspace_entities(workspace_id, records)
     formula_images_by_id = load_workspace_formula_images(workspace_id)
     effective_query, agent_result, query_resolution = _resolve_query_with_context(
         provider=provider,
         records=records,
         embeddings=embeddings,
+        entities=entities,
         prompt=prompt,
         embed_model=embed_model,
     )
@@ -291,6 +296,7 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
         "query_resolution": query_resolution,
         "workspace_id": workspace_id,
         "query_type": agent_result.query_type,
+        "query_entity": agent_result.entity,
         "mode": agent_result.mode,
         "evidence": asdict(agent_result.evidence),
         "steps": [{"name": step.name, "details": step.details} for step in agent_result.steps],
@@ -310,14 +316,24 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
         st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
         return norm_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id)
 
+    term_answer = try_build_term_lookup_answer(
+        QueryUnderstanding(intent=agent_result.query_type, entity=agent_result.entity),
+        agent_result.results,
+        records,
+        language=language,
+    )
+    if term_answer is not None:
+        st.session_state["last_debug"]["answer_mode"] = "deterministic_term_lookup"
+        return term_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id)
+
     if not agent_result.evidence.ok:
         st.session_state["last_debug"]["answer_mode"] = "weak_evidence_refusal"
-        return t("no_results", language), _collect_formula_images(agent_result.results, formula_images_by_id)
+        return _with_suggestions(t("no_results", language), prompt, agent_result, language), _collect_formula_images(agent_result.results, formula_images_by_id)
 
     answer_context = build_answer_context(
         effective_query,
         agent_result.results,
-        max_results=_answer_context_limit(agent_result.results),
+        max_results=_answer_context_limit(agent_result.results, agent_result.query_type, agent_result.entity),
         evidence=agent_result.evidence,
         language=language,
     )
@@ -330,16 +346,18 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     except Exception as exc:
         return t("answer_failed", language, error=exc), _collect_formula_images(agent_result.results, formula_images_by_id)
 
-    return (generated.text or t("empty_answer", language)), _collect_formula_images(agent_result.results, formula_images_by_id)
+    answer_text = generated.text or t("empty_answer", language)
+    return _with_suggestions(answer_text, prompt, agent_result, language), _collect_formula_images(agent_result.results, formula_images_by_id)
 
 
-def _resolve_query_with_context(provider, records: list[SearchRecord], embeddings, prompt: str, embed_model: str):
+def _resolve_query_with_context(provider, records: list[SearchRecord], embeddings, entities: list[str], prompt: str, embed_model: str):
     standalone_result = run_agent_retrieval(
         provider=provider,
         records=records,
         embedding_records=embeddings,
         query=prompt,
         embed_model=embed_model,
+        entity_names=entities,
         limit=12,
     )
 
@@ -367,6 +385,7 @@ def _resolve_query_with_context(provider, records: list[SearchRecord], embedding
         embedding_records=embeddings,
         query=contextual_query,
         embed_model=embed_model,
+        entity_names=entities,
         limit=12,
     )
     return contextual_query, contextual_result, "contextual_after_empty_standalone"
@@ -391,7 +410,9 @@ def _extract_query_target(prompt: str) -> str | None:
     return None
 
 
-def _answer_context_limit(results: list) -> int:
+def _answer_context_limit(results: list, query_type: str, entity: str | None = None) -> int:
+    if query_type in {"definition", "composition", "formula", "norm"} or entity:
+        return 12
     if any(result.record.record_type in {"table_cell", "table_row"} for result in results[:12]):
         return 12
     return 6
@@ -444,6 +465,7 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
     records = build_search_records(parsed)
     records = _enrich_records_with_formulas(records, workspace_id, provider, selection, config, language)
     save_workspace_records(workspace_id, parsed.source_name, file_hash, records)
+    save_workspace_entities(workspace_id, records)
     parse_progress.progress(1.0, text=t("indexing.done", language, records=len(records), tokens=_records_tokens(records)))
 
     _build_workspace_embeddings(workspace_id, provider, selection, records, config, language)
@@ -563,6 +585,7 @@ def _run_formula_enrichment(workspace_id: str, provider, selection, config: AppC
 
     combined_records = [*records, *enrichment.created_records]
     save_workspace_records(workspace_id, info.source_name, info.file_hash, combined_records)
+    save_workspace_entities(workspace_id, combined_records)
 
     existing_embeddings = load_workspace_embeddings(workspace_id)
     save_workspace_embeddings(workspace_id, [*existing_embeddings, *enrichment.created_embeddings], selection.embed_model)
@@ -654,6 +677,24 @@ def _result_to_debug(result) -> dict:
         "matched_terms": result.matched_terms,
         "snippet": result.snippet,
     }
+
+
+def _with_suggestions(answer: str, prompt: str, agent_result, language: str) -> str:
+    should_suggest = (not agent_result.results) or (not agent_result.evidence.ok) or (
+        agent_result.query_type in {"definition", "composition", "formula", "norm"} and not agent_result.entity
+    )
+    if not should_suggest:
+        return answer
+
+    suggestions = build_query_suggestions(prompt, agent_result.entity, agent_result.query_type, language=language)
+    if not suggestions:
+        return answer
+
+    header = "Maybe you meant:" if language == "en" else "Может, вы имели в виду:"
+    lines = "\n".join(f"- {item}" for item in suggestions)
+    if not answer.strip():
+        return f"{header}\n{lines}"
+    return f"{answer}\n\n{header}\n{lines}"
 
 
 def _stream_text(text: str):

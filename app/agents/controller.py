@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from app.agents.query_understanding import classify_intent, extract_query_entity
 from app.providers.base import BaseProvider
 from app.retrieval.evidence import EvidenceReport, validate_evidence
 from app.retrieval.exact import SearchResult
@@ -21,6 +22,7 @@ class AgentStep:
 class AgentRetrievalResult:
     query: str
     query_type: str
+    entity: str | None
     mode: str
     results: list[SearchResult]
     evidence: EvidenceReport
@@ -33,27 +35,49 @@ def run_agent_retrieval(
     embedding_records: list[EmbeddingRecord],
     query: str,
     embed_model: str,
+    entity_names: list[str] | None = None,
     limit: int = 30,
 ) -> AgentRetrievalResult:
     steps: list[AgentStep] = []
-    query_type = classify_query(query)
+    query_type = classify_intent(query)
+    entity = extract_query_entity(query, entity_names or [])
     mode = _select_mode(query_type, embedding_records)
-    steps.append(AgentStep("classify_query", {"query_type": query_type, "selected_mode": mode}))
+    steps.append(AgentStep("classify_query", {"query_type": query_type, "entity": entity, "selected_mode": mode}))
 
     normalized_query = normalize_query(query)
     if normalized_query != query:
         steps.append(AgentStep("normalize_query", {"from": query, "to": normalized_query}))
 
-    candidate_records, candidate_embeddings = _filter_candidates(records, embedding_records, normalized_query, query_type, steps)
-    results = _run_retrieval(provider, candidate_records, candidate_embeddings, normalized_query, embed_model, mode, limit, steps)
+    candidate_records, candidate_embeddings = _filter_candidates(
+        records,
+        embedding_records,
+        normalized_query,
+        query_type,
+        entity,
+        steps,
+    )
+
+    if entity and query_type in {"definition", "composition", "formula", "norm"}:
+        results = _search_entity_records(candidate_records, entity, query_type, limit)
+        steps.append(AgentStep("search_entity_records", {"entity": entity, "result_count": len(results)}))
+    else:
+        results = _run_retrieval(provider, candidate_records, candidate_embeddings, normalized_query, embed_model, mode, limit, steps)
+
     results = _expand_table_context(records, results)
     results = _expand_paragraph_context(records, results, normalized_query)
 
-    if not results and query_type != "exact":
+    if not results and query_type not in {"exact", "definition", "composition", "formula", "norm"}:
         rewritten = rewrite_query(normalized_query)
         if rewritten != normalized_query:
             steps.append(AgentStep("rewrite_query", {"from": normalized_query, "to": rewritten}))
-            candidate_records, candidate_embeddings = _filter_candidates(records, embedding_records, rewritten, query_type, steps)
+            candidate_records, candidate_embeddings = _filter_candidates(
+                records,
+                embedding_records,
+                rewritten,
+                query_type,
+                entity,
+                steps,
+            )
             results = _run_retrieval(provider, candidate_records, candidate_embeddings, rewritten, embed_model, mode, limit, steps)
             results = _expand_table_context(records, results)
             results = _expand_paragraph_context(records, results, rewritten)
@@ -74,34 +98,12 @@ def run_agent_retrieval(
     return AgentRetrievalResult(
         query=query,
         query_type=query_type,
+        entity=entity,
         mode=mode,
         results=results,
         evidence=evidence,
         steps=steps,
     )
-
-
-def classify_query(query: str) -> str:
-    normalized = query.strip()
-    lower = normalized.lower().replace("\u0451", "\u0435")
-
-    if re.fullmatch(r"[\w\.\-]+", normalized, flags=re.UNICODE) and re.search(r"\d", normalized):
-        return "exact"
-
-    table_keywords = [
-        "\u043a\u043e\u0434",
-        "\u0441\u0447\u0435\u0442",
-        "\u043d\u043e\u0440\u043c\u0430\u0442\u0438\u0432",
-        "\u0442\u0430\u0431\u043b\u0438\u0446",
-        "\u0441\u0442\u0440\u043e\u043a",
-    ]
-    if any(keyword in lower for keyword in table_keywords):
-        return "table_lookup"
-
-    if len(normalized.split()) >= 5:
-        return "semantic"
-
-    return "exact"
 
 
 def normalize_query(query: str) -> str:
@@ -117,7 +119,7 @@ def rewrite_query(query: str) -> str:
 
 
 def _select_mode(query_type: str, embedding_records: list[EmbeddingRecord]) -> str:
-    if query_type in {"exact", "table_lookup"}:
+    if query_type in {"exact", "table_lookup", "code_lookup", "definition", "composition", "formula", "norm"}:
         return "exact"
     if embedding_records:
         return "hybrid"
@@ -151,12 +153,16 @@ def _run_retrieval(
     return results
 
 
-def _hybrid_trace_to_dict(trace: HybridSearchTrace) -> dict[str, int]:
+def _hybrid_trace_to_dict(trace: HybridSearchTrace) -> dict[str, int | float | str]:
     return {
         "exact_count": trace.exact_count,
         "bm25_count": trace.bm25_count,
         "vector_count": trace.vector_count,
         "fused_count": trace.fused_count,
+        "exact_contribution": trace.exact_contribution,
+        "bm25_contribution": trace.bm25_contribution,
+        "vector_contribution": trace.vector_contribution,
+        "top_sources": trace.top_sources,
     }
 
 
@@ -165,12 +171,14 @@ def _filter_candidates(
     embedding_records: list[EmbeddingRecord],
     query: str,
     query_type: str,
+    entity: str | None,
     steps: list[AgentStep],
 ) -> tuple[list[SearchRecord], list[EmbeddingRecord]]:
     target = _extract_target(query)
     table_intent = _has_table_intent(query)
+    entity_intent = entity is not None and query_type in {"definition", "composition", "formula", "norm"}
 
-    if not target and not table_intent:
+    if not target and not table_intent and not entity_intent:
         steps.append(AgentStep("filter_candidates", {"applied": False, "reason": "no_filter_target"}))
         return records, embedding_records
 
@@ -182,6 +190,12 @@ def _filter_candidates(
         if target_candidates:
             candidates = target_candidates
             filters.append(f"target:{target}")
+
+    if entity_intent and entity:
+        entity_candidates = _filter_by_entity(candidates, entity)
+        if entity_candidates:
+            candidates = entity_candidates
+            filters.append(f"entity:{entity}")
 
     if table_intent:
         table_candidates = [record for record in candidates if record.record_type in {"table", "table_row", "table_cell"}]
@@ -235,6 +249,15 @@ def _filter_by_target(records: list[SearchRecord], target: str) -> list[SearchRe
     ]
 
 
+def _filter_by_entity(records: list[SearchRecord], entity: str) -> list[SearchRecord]:
+    normalized_entity = _normalize_target(entity)
+    return [
+        record
+        for record in records
+        if re.search(rf"(?<![\w]){re.escape(normalized_entity)}(?![\w])", _normalize_target(f"{record.text} {' '.join(record.section_path)}"))
+    ]
+
+
 def _normalize_target(value: str) -> str:
     normalized = value.lower().replace("\u0451", "\u0435")
     normalized = re.sub(r"\bн(?=\d)", "n", normalized)
@@ -251,7 +274,7 @@ def _target_matches(text: str, target: str) -> bool:
 def _extract_named_norm_target(query: str) -> str | None:
     normalized = query.lower().replace("\u0451", "\u0435")
     if "краткосрочн" in normalized and "ликвидност" in normalized:
-        return "Н2"
+        return "Н3"
     if "текущ" in normalized and "ликвидност" in normalized:
         return "Н3"
     if "мгновенн" in normalized and "ликвидност" in normalized:
@@ -337,4 +360,63 @@ def _expand_paragraph_context(records: list[SearchRecord], results: list[SearchR
 
 def _needs_paragraph_context(query: str) -> bool:
     normalized = query.lower().replace("\u0451", "\u0435")
-    return any(term in normalized for term in ["рассчитывается", "расчет", "формуле", "норматив"])
+    return any(term in normalized for term in ["рассчитывается", "расчет", "формуле", "норматив", "состав", "входит", "показатель", "что такое"])
+
+
+def _search_entity_records(records: list[SearchRecord], entity: str, query_type: str, limit: int) -> list[SearchResult]:
+    normalized_entity = _normalize_target(entity)
+    results: list[SearchResult] = []
+
+    for record in records:
+        haystack = _normalize_target(f"{record.text} {' '.join(record.section_path)}")
+        if not re.search(rf"(?<![\w]){re.escape(normalized_entity)}(?![\w])", haystack):
+            continue
+
+        score = 40.0
+        matched_terms = [entity, "entity_lookup"]
+        text = record.text.lower().replace("\u0451", "\u0435")
+
+        if record.record_type == "paragraph":
+            score += 10.0
+
+        if re.search(rf"^\s*{re.escape(entity.lower())}\s*-", text, flags=re.MULTILINE):
+            score += 80.0
+            matched_terms.append("definition")
+
+        if f"показатель {normalized_entity}" in haystack and "рассчитывается как" in text:
+            score += 120.0
+            matched_terms.append("calculation")
+        elif "рассчитывается как" in text:
+            score += 60.0
+            matched_terms.append("calculation")
+
+        if query_type in {"formula", "norm"} and "рассчитывается по формуле" in text:
+            score += 160.0
+            matched_terms.append("formula_anchor")
+        elif query_type in {"formula", "norm"} and "рассчитывается" in text:
+            score += 90.0
+            matched_terms.append("calculation")
+
+        if query_type in {"formula", "norm"} and "норматив" in text:
+            score += 20.0
+            matched_terms.append("normative_context")
+
+        if query_type == "composition" and any(term in text for term in ["включаются", "сумма", "вычитаются", "уменьшенная на", "рассчитывается как"]):
+            score += 50.0
+            matched_terms.append("composition")
+
+        if query_type == "formula" and "формул" in text:
+            score += 40.0
+            matched_terms.append("formula")
+
+        results.append(
+            SearchResult(
+                record=record,
+                score=score,
+                matched_terms=list(dict.fromkeys(matched_terms)),
+                snippet=record.text[:320],
+            )
+        )
+
+    results.sort(key=lambda item: item.score, reverse=True)
+    return results[:limit]
