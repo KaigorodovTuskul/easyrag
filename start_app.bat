@@ -9,4 +9,4 @@ if not exist "%PYTHON%" (
     exit /b 1
 )
 
-"%PYTHON%" -m streamlit run "%ROOT%app\ui\streamlit_app.py" --server.address 0.0.0.0 --server.port 8501
+"%PYTHON%" -m streamlit run "%ROOT%app\ui\streamlit_app.py" 
