@@ -2,6 +2,8 @@
 
 Local-first RAG for DOCX documents with exact search, BM25, hybrid retrieval, multimodal formula extraction, and a Streamlit chat UI.
 
+![EasyRAG banner](banner.jpeg)
+
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
 ![UI](https://img.shields.io/badge/ui-Streamlit-FF4B4B)
@@ -15,6 +17,10 @@ It is designed for structured documents where plain vector search is not enough:
 - internal procedures and manuals
 - technical documentation
 - DOCX files with tables, formulas, and embedded Word objects
+
+## Demo
+
+![EasyRAG demo](demo.gif)
 
 ## Why EasyRAG
 
@@ -35,10 +41,10 @@ EasyRAG is built around a practical retrieval stack rather than a single LLM cal
 - Extracts formula text from embedded images using a multimodal model
 - Shows relevant formula images inline in answers when needed
 - Handles questions like:
-  - `Как рассчитывается норматив Н2?`
-  - `Что входит в состав Лат?`
-  - `Что означает код 8720?`
-  - `Где в документе описан Лам?`
+  - `How is the H2 ratio calculated?`
+  - `What is included in Lat?`
+  - `What does code 8720 mean?`
+  - `Where is Lam described in the document?`
 
 ## Formula Pipeline
 
@@ -106,10 +112,10 @@ If you want the default EasyRAG experience, start here:
 
 Recommended query patterns:
 
-- `Как рассчитывается норматив Н3?`
-- `Что входит в состав Лам?`
-- `Что такое Овт*?`
-- `Какие коды входят в расчет Лат?`
+- `How is the H3 ratio calculated?`
+- `What is included in Lam?`
+- `What is Ovt*?`
+- `Which codes are used in the Lat calculation?`
 
 ## Model Selection
 
@@ -168,8 +174,8 @@ Notes:
 
 EasyRAG does not treat every question the same way.
 
-- **Norm questions** like `Н2`, `Н3`, `Н4` use intent-aware retrieval with paragraph anchoring
-- **Composition questions** like `что входит в состав Лат` prefer deterministic extraction from nearby definitions
+- **Norm questions** like `H2`, `H3`, `H4` use intent-aware retrieval with paragraph anchoring
+- **Composition questions** like `what is included in Lat` prefer deterministic extraction from nearby definitions
 - **Code lookups** prefer exact/table-oriented retrieval
 - **General questions** can use hybrid retrieval with embeddings
 
