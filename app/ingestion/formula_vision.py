@@ -18,11 +18,11 @@ _FORMULA_IMAGE_PROMPT = (
 
 
 def recognize_formula_image(provider: BaseProvider, blob: bytes, filename: str, model: str | None = None) -> str | None:
-    prepared = _prepare_image(blob, filename)
+    prepared = prepare_formula_image(blob, filename)
     if prepared is None:
         return None
 
-    data, mime_type = prepared
+    data, mime_type, _ = prepared
     try:
         result = provider.generate_with_images(
             _FORMULA_IMAGE_PROMPT,
@@ -76,18 +76,19 @@ def _clean_formula_text(value: str | None) -> str | None:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def _prepare_image(blob: bytes, filename: str) -> tuple[bytes, str] | None:
+def prepare_formula_image(blob: bytes, filename: str) -> tuple[bytes, str, str] | None:
     suffix = Path(filename).suffix.lower()
     if suffix in {".wmf", ".emf"}:
         rendered = _render_vector_image_to_png(blob, suffix)
         if rendered is None:
             return None
-        return rendered, "image/png"
+        rendered_name = f"{Path(filename).stem}.png"
+        return rendered, "image/png", rendered_name
 
     mime_type = _mime_type_for_suffix(suffix)
     if mime_type is None:
         return None
-    return blob, mime_type
+    return blob, mime_type, Path(filename).name
 
 
 def _mime_type_for_suffix(suffix: str) -> str | None:

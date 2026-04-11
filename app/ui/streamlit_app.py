@@ -20,7 +20,7 @@ from app.providers.router import ProviderRouter
 from app.retrieval.records import SearchRecord, build_search_records
 from app.storage.conversations import clear_conversation, load_conversation, save_conversation
 from app.storage.files import save_parsed_payload, save_uploaded_docx
-from app.storage.formula_images import load_workspace_formula_images, save_workspace_formula_images
+from app.storage.formula_images import load_workspace_formula_images, read_formula_image_for_display, save_workspace_formula_images
 from app.storage.workspaces import (
     estimate_tokens,
     file_hash_for_content,
@@ -78,26 +78,23 @@ def _render_provider_settings(config: AppConfig, language: str):
     provider, selection = _resolve_provider(config, mode, language)
     available_model_names = [model.name for model in selection.available_models]
 
-    selection.chat_model = _render_model_picker(
+    selection.chat_model = _render_model_selectbox(
         label=t("chat_model.label", language),
-        custom_label=t("model.manual_label", language, target=t("chat_model.label", language).lower()),
         available=available_model_names,
         current=selection.chat_model,
-        key_prefix="chat_model",
+        key="chat_model_select",
     )
-    selection.embed_model = _render_model_picker(
+    selection.embed_model = _render_model_selectbox(
         label=t("embed_model.label", language),
-        custom_label=t("model.manual_label", language, target=t("embed_model.label", language).lower()),
         available=available_model_names,
         current=selection.embed_model,
-        key_prefix="embed_model",
+        key="embed_model_select",
     )
-    selection.vision_model = _render_model_picker(
+    selection.vision_model = _render_model_selectbox(
         label=t("vision_model.label", language),
-        custom_label=t("model.manual_label", language, target=t("vision_model.label", language).lower()),
         available=available_model_names,
         current=selection.vision_model,
-        key_prefix="vision_model",
+        key="vision_model_select",
         allow_none=True,
     )
 
@@ -138,49 +135,38 @@ def _model_options(available: list[str], current: str | None) -> list[str]:
     return options
 
 
-def _render_model_picker(
+def _render_model_selectbox(
     label: str,
-    custom_label: str,
     available: list[str],
     current: str | None,
-    key_prefix: str,
+    key: str,
     allow_none: bool = False,
 ) -> str | None:
-    manual_option = "__manual__"
     none_option = "__none__"
     options = _model_options(available, current)
-    choice_options = ([none_option] if allow_none else []) + options + [manual_option]
+    choice_options = ([none_option] if allow_none else []) + options
 
-    if current and current not in options:
-        selected_choice = manual_option
-    elif current is None and allow_none:
+    if current is None and allow_none:
         selected_choice = none_option
     elif current:
         selected_choice = current
     elif options:
         selected_choice = options[0]
     else:
-        selected_choice = manual_option if not allow_none else none_option
+        selected_choice = none_option if allow_none else None
+
+    if selected_choice is None:
+        return None
 
     selected = st.sidebar.selectbox(
         label,
         choice_options,
         index=choice_options.index(selected_choice),
         format_func=lambda value: _format_model_option(value, st.session_state.get("language", "ru")),
-        key=f"{key_prefix}_select",
+        key=key,
     )
 
-    custom_default = current if current and current not in options else ""
-    custom_value = st.sidebar.text_input(custom_label, value=custom_default, key=f"{key_prefix}_custom")
-    if custom_value.strip():
-        return custom_value.strip()
     if allow_none and selected == none_option:
-        return None
-    if selected == manual_option:
-        if current:
-            return current
-        if options:
-            return options[0]
         return None
     return selected
 
@@ -188,8 +174,6 @@ def _render_model_picker(
 def _format_model_option(value: str, language: str) -> str:
     if value == "__none__":
         return "None"
-    if value == "__manual__":
-        return t("model.manual_option", language)
     return value
 
 
@@ -706,13 +690,22 @@ def _collect_formula_images(results, formula_images_by_id: dict[str, object], li
 def _render_formula_images(formula_images: list[dict] | None) -> None:
     if not formula_images:
         return
+    workspace_id = st.session_state.get("workspace_id")
+    image_index = load_workspace_formula_images(workspace_id) if workspace_id else {}
     for item in formula_images:
         path = item.get("path")
         filename = item.get("filename", "formula")
         if not path:
             continue
         st.caption(f"Формула как изображение: {filename}")
-        st.image(path)
+        try:
+            stored = image_index.get(item.get("asset_id")) if item.get("asset_id") else None
+            if stored is not None:
+                st.image(read_formula_image_for_display(stored))
+            else:
+                st.image(path)
+        except Exception:
+            st.caption(f"Не удалось показать изображение формулы: {filename}")
 
 
 def _can_attempt_formula_vision(selection) -> bool:

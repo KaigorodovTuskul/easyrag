@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from app.ingestion.docx_parser import FormulaImageAsset
+from app.ingestion.formula_vision import prepare_formula_image
 from app.storage.workspaces import workspace_dir
 
 
@@ -33,13 +34,22 @@ def save_workspace_formula_images(workspace_id: str, assets: list[FormulaImageAs
     stored: list[StoredFormulaImage] = []
 
     for asset in assets:
-        suffix = Path(asset.filename).suffix or ".bin"
-        target = root / f"{asset.asset_id}{suffix}"
-        target.write_bytes(asset.content)
+        prepared = prepare_formula_image(asset.content, asset.filename)
+        if prepared is None:
+            suffix = Path(asset.filename).suffix or ".bin"
+            target = root / f"{asset.asset_id}{suffix}"
+            target.write_bytes(asset.content)
+            stored_filename = asset.filename
+        else:
+            image_bytes, _, rendered_name = prepared
+            suffix = Path(rendered_name).suffix or ".png"
+            target = root / f"{asset.asset_id}{suffix}"
+            target.write_bytes(image_bytes)
+            stored_filename = rendered_name
         stored.append(
             StoredFormulaImage(
                 asset_id=asset.asset_id,
-                filename=asset.filename,
+                filename=stored_filename,
                 relative_path=str(target),
             )
         )
@@ -70,3 +80,11 @@ def load_workspace_formula_images(workspace_id: str) -> dict[str, StoredFormulaI
 
 def read_formula_image_bytes(item: StoredFormulaImage) -> bytes:
     return Path(item.relative_path).read_bytes()
+
+
+def read_formula_image_for_display(item: StoredFormulaImage) -> bytes:
+    raw = Path(item.relative_path).read_bytes()
+    prepared = prepare_formula_image(raw, item.filename)
+    if prepared is None:
+        return raw
+    return prepared[0]
