@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from io import BytesIO
 from pathlib import Path
 
 from app.ingestion.docx_parser import FormulaImageAsset
@@ -85,6 +86,24 @@ def read_formula_image_bytes(item: StoredFormulaImage) -> bytes:
 def read_formula_image_for_display(item: StoredFormulaImage) -> bytes:
     raw = Path(item.relative_path).read_bytes()
     prepared = prepare_formula_image(raw, item.filename)
-    if prepared is None:
-        return raw
-    return prepared[0]
+    image_bytes = raw if prepared is None else prepared[0]
+    return _resize_image_bytes(image_bytes)
+
+
+def _resize_image_bytes(image_bytes: bytes, max_width: int = 900) -> bytes:
+    try:
+        from PIL import Image
+    except ImportError:
+        return image_bytes
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            if image.width <= max_width:
+                return image_bytes
+            scale = max_width / max(image.width, 1)
+            resized = image.resize((max_width, max(1, int(image.height * scale))))
+            buffer = BytesIO()
+            resized.save(buffer, format="PNG")
+            return buffer.getvalue()
+    except Exception:
+        return image_bytes

@@ -703,7 +703,7 @@ def _render_formula_images(formula_images: list[dict] | None) -> None:
             if stored is not None:
                 st.image(read_formula_image_for_display(stored))
             else:
-                st.image(path)
+                st.image(path, width=900)
         except Exception:
             st.caption(f"Не удалось показать изображение формулы: {filename}")
 
