@@ -2,7 +2,7 @@
 
 Local-first RAG for DOCX documents with exact search, BM25, hybrid retrieval, multimodal formula extraction, and a Streamlit chat UI.
 
-![EasyRAG banner](banner.jpeg)
+![EasyRAG banner](docs/assets/banner.jpeg)
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
@@ -20,7 +20,7 @@ It is designed for structured documents where plain vector search is not enough:
 
 ## Demo
 
-![EasyRAG demo](demo.gif)
+![EasyRAG demo](docs/assets/demo.gif)
 
 ## Why EasyRAG
 
