@@ -2,46 +2,76 @@
 
 Local-first RAG for DOCX documents with exact search, BM25, hybrid retrieval, multimodal formula extraction, and a Streamlit chat UI.
 
-## Overview
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
+![UI](https://img.shields.io/badge/ui-Streamlit-FF4B4B)
+![Docs](https://img.shields.io/badge/docs-README-informational)
 
-EasyRAG builds a local workspace for one uploaded DOCX document, caches parsed fragments and embeddings, and then answers questions in a chat interface.
+EasyRAG turns a DOCX file into a local searchable workspace, caches parsed fragments and embeddings, and answers questions through a chat interface.
 
-Key points:
+It is designed for structured documents where plain vector search is not enough:
 
-- DOCX parsing with paragraph and table extraction
-- Exact search + BM25 + hybrid retrieval
-- Ollama and OpenRouter support
-- Separate answer, embedding, and vision model selection
-- Formula extraction from embedded DOCX images through a multimodal model
-- Inline display of formula images in relevant answers
-- Deterministic answer builders for norms, terms, codes, and composition questions
+- regulatory and banking documents
+- internal procedures and manuals
+- technical documentation
+- DOCX files with tables, formulas, and embedded Word objects
 
-RU: локальный RAG для DOCX-документов с кэшем workspace, exact/BM25/hybrid retrieval, multimodal-извлечением формул и чат-интерфейсом.
+## Why EasyRAG
 
-## Demo
+EasyRAG is built around a practical retrieval stack rather than a single LLM call.
 
-![EasyRAG demo](demo.gif)
+- **Exact search** catches codes, norms, account numbers, and literal fragments
+- **BM25** improves lexical recall for structured prose
+- **Hybrid retrieval** adds embedding-based semantic search where it helps
+- **Deterministic answer builders** handle norms, terms, composition questions, and code lookups
+- **Vision-based formula extraction** handles DOCX formulas stored as images
+- **Local workspace caching** avoids reparsing and reembedding on every launch
 
-## Requirements
+## What It Does
 
-- Windows
-- Python 3.11+ recommended
-- Microsoft Office / PowerPoint installed if the DOCX contains `WMF` or `EMF` formulas
+- Parses DOCX paragraphs and tables into searchable records
+- Builds a per-document workspace with cached records, embeddings, and assets
+- Lets you choose answer, embedding, and vision models separately
+- Extracts formula text from embedded images using a multimodal model
+- Shows relevant formula images inline in answers when needed
+- Handles questions like:
+  - `Как рассчитывается норматив Н2?`
+  - `Что входит в состав Лат?`
+  - `Что означает код 8720?`
+  - `Где в документе описан Лам?`
 
-Why Office matters:
+## Formula Pipeline
 
-- many Word formulas in regulatory documents are embedded as `WMF` / `EMF`
-- EasyRAG renders those vector objects through PowerPoint first, then sends the resulting image to the selected vision-capable model
-- without Office, some vector formulas may remain unavailable for recognition and preview
+EasyRAG no longer uses local OCR or `pix2tex`.
 
-## Setup: Portable Python
+Current formula flow:
 
-1. Run `bootstrap_env.bat`
-2. Copy `.env.example` to `.env`
-3. Fill provider settings you actually use
-4. Start with `start_app.bat`
+1. DOCX parsing extracts embedded formula images and saves them as workspace assets
+2. If a vision-capable model is available, EasyRAG sends the image to that model
+3. Recognized formula text is added back into the search index
+4. If recognition is unavailable, the image asset is still preserved and can be shown in the answer
 
-## Setup: venv
+Important notes:
+
+- many regulatory DOCX files store formulas as `WMF` or `EMF`
+- on Windows, EasyRAG renders those vector objects through PowerPoint before recognition
+- if Microsoft Office / PowerPoint is not installed, some `WMF` / `EMF` formulas may not be rendered or previewed correctly
+
+## Quick Start
+
+### Option 1: Portable Python
+
+```powershell
+bootstrap_env.bat
+copy .env.example .env
+start_app.bat
+```
+
+Then open:
+
+- `http://localhost:8501`
+
+### Option 2: venv
 
 ```powershell
 python -m venv .venv
@@ -50,12 +80,49 @@ python -m pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File scripts\run_streamlit.ps1
 ```
 
-## Setup: System Python
+### Option 3: System Python
 
 ```powershell
 python -m pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File scripts\run_streamlit.ps1
 ```
+
+## Requirements
+
+- Windows
+- Python 3.11+
+- Microsoft Office / PowerPoint recommended for `WMF` / `EMF` formulas
+- Ollama or OpenRouter if you want LLM / embedding / vision inference
+
+## Recommended Flow
+
+If you want the default EasyRAG experience, start here:
+
+1. Upload one DOCX file in the sidebar
+2. Pick the answer model
+3. Pick the embedding model
+4. Pick the vision model, or leave it as `None`
+5. Ask questions in natural language
+
+Recommended query patterns:
+
+- `Как рассчитывается норматив Н3?`
+- `Что входит в состав Лам?`
+- `Что такое Овт*?`
+- `Какие коды входят в расчет Лат?`
+
+## Model Selection
+
+EasyRAG supports separate model roles in the UI:
+
+- **Answer model**: used for generation
+- **Embedding model**: used for semantic retrieval
+- **Vision model**: used for formula extraction from images
+
+Behavior when no vision model is selected:
+
+- the UI defaults to `None`
+- EasyRAG tries to use the selected answer model as the vision model if that model supports image input
 
 ## Configuration
 
@@ -94,33 +161,45 @@ TRACE_AGENT_STEPS=true
 Notes:
 
 - `APP_LANGUAGE` supports `ru` and `en`
-- `OLLAMA_DEFAULT_VISION_MODEL` and `OPENROUTER_VISION_MODEL` are optional
-- if the vision model is left empty, the UI defaults to `None`
-- when `None` is selected, EasyRAG tries to use the selected answer model as the vision model if that model supports image input
 - `EMBEDDING_RECORD_TYPES=paragraph,table_row` is the default because exact/BM25 already covers many table questions well
+- `OLLAMA_DEFAULT_VISION_MODEL` and `OPENROUTER_VISION_MODEL` are optional
 
-## Formula Handling
+## Retrieval Strategy
 
-EasyRAG no longer uses local OCR or `pix2tex`.
+EasyRAG does not treat every question the same way.
 
-Current pipeline:
+- **Norm questions** like `Н2`, `Н3`, `Н4` use intent-aware retrieval with paragraph anchoring
+- **Composition questions** like `что входит в состав Лат` prefer deterministic extraction from nearby definitions
+- **Code lookups** prefer exact/table-oriented retrieval
+- **General questions** can use hybrid retrieval with embeddings
 
-1. DOCX parser extracts formula images and stores them in workspace assets
-2. If a vision-capable model is available during indexing or later enrichment, EasyRAG sends the image to that model
-3. Recognized formula text is written back into the search index
-4. If recognition is unavailable, the image asset is still preserved and can be shown in the chat answer
+This matters because structured documents are not uniform:
 
-Important limitations:
-
-- if a formula exists only as an embedded Word image/object, text-only retrieval can still answer from surrounding prose without reconstructing the exact fraction
-- exact visual reconstruction of `WMF` / `EMF` formulas depends on Office/PowerPoint availability on the machine
+- a Python codebase README is retrieved differently from
+- a journalistic article, which is retrieved differently from
+- a banking regulation full of formulas, codes, and account lists
 
 ## Current UI Behavior
 
 - answer model, embedding model, and vision model are selected separately in the sidebar
-- there are no extra "custom model" text fields in the current UI
-- formula images are shown only for formula/norm answers where they are locally relevant
+- there are no extra custom-model input fields in the current UI
+- formula images are shown only for locally relevant norm/formula answers
 - deterministic term/composition answers intentionally do not auto-attach unrelated formula images
+
+## Project Layout
+
+```text
+app/
+  agents/       retrieval orchestration and deterministic answer builders
+  core/         config, i18n, shared models
+  ingestion/    DOCX parsing and formula processing
+  providers/    Ollama / OpenRouter integrations
+  retrieval/    exact, BM25, hybrid, vector logic
+  storage/      workspaces, embeddings, assets, conversations
+  ui/           Streamlit application
+scripts/        startup and helper scripts
+tools/          portable Python runtime
+```
 
 ## Commands
 
@@ -128,3 +207,9 @@ Important limitations:
 tools\python-portable\python.exe scripts\provider_status.py
 powershell -ExecutionPolicy Bypass -File scripts\run_streamlit.ps1
 ```
+
+## Notes
+
+- `requirements.txt` intentionally lists only the direct Python dependencies used by the project
+- some functionality depends on Windows system capabilities rather than extra pip packages
+- formula rendering for Office vector formats is a runtime/system concern, not a Python dependency concern
