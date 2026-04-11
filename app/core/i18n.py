@@ -92,6 +92,19 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "ru": "Фрагментов: {records}; embeddings: {embeddings}",
         "en": "Fragments: {records}; embeddings: {embeddings}",
     },
+    "formula.enrich": {"ru": "Распознать сохраненные формулы", "en": "Recognize saved formulas"},
+    "formula.enrich_done": {
+        "ru": "Формулы распознаны: +{records} fragments, +{embeddings} embeddings.",
+        "en": "Formula recognition complete: +{records} fragments, +{embeddings} embeddings.",
+    },
+    "formula.enrich_empty": {
+        "ru": "Новых формул для распознавания не найдено или модель не смогла их извлечь.",
+        "en": "No new formulas were recognized or the model could not extract them.",
+    },
+    "formula.auto_enrich": {
+        "ru": "Во время индексации распознано формул: {records}",
+        "en": "Formulas recognized during indexing: {records}",
+    },
     "debug.title": {"ru": "Отладка", "en": "Debug"},
     "debug.workspace": {"ru": "Текущая база", "en": "Current workspace"},
     "debug.models": {"ru": "Модели", "en": "Models"},

@@ -66,3 +66,7 @@ def load_workspace_formula_images(workspace_id: str) -> dict[str, StoredFormulaI
         )
         items[stored.asset_id] = stored
     return items
+
+
+def read_formula_image_bytes(item: StoredFormulaImage) -> bytes:
+    return Path(item.relative_path).read_bytes()

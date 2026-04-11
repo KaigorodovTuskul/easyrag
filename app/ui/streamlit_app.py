@@ -12,6 +12,7 @@ from app.agents.norm_lookup import try_build_norm_lookup_answer
 from app.core.config import AppConfig
 from app.core.i18n import SUPPORTED_LANGUAGES, normalize_language, t
 from app.eval.runner import run_eval
+from app.ingestion.formula_enrichment import enrich_formula_records
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.ollama import OllamaProvider
 from app.providers.openrouter import OpenRouterProvider
@@ -228,6 +229,7 @@ def _render_sidebar_workspace(config: AppConfig, provider, selection, language: 
 
     if selected_workspace_id:
         _render_workspace_summary(selected_workspace_id, language)
+        _render_formula_enrichment_controls(selected_workspace_id, provider, selection, config, language)
         if st.sidebar.button(t("clear_chat", language)):
             _clear_chat_context(selected_workspace_id)
             st.rerun()
@@ -452,6 +454,7 @@ def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppC
     save_parsed_payload(uploaded_file.name, parsed.to_dict())
     save_workspace_formula_images(workspace_id, parsed.formula_images)
     records = build_search_records(parsed)
+    records = _enrich_records_with_formulas(records, workspace_id, provider, selection, config, language)
     save_workspace_records(workspace_id, parsed.source_name, file_hash, records)
     parse_progress.progress(1.0, text=t("indexing.done", language, records=len(records), tokens=_records_tokens(records)))
 
@@ -526,6 +529,79 @@ def _render_workspace_summary(workspace_id: str, language: str) -> None:
         return
     st.sidebar.caption(t("workspace.current", language, source=info.source_name))
     st.sidebar.caption(t("workspace.stats", language, records=info.record_count, embeddings=info.embedding_count))
+
+
+def _render_formula_enrichment_controls(workspace_id: str, provider, selection, config: AppConfig, language: str) -> None:
+    if not st.sidebar.button(t("formula.enrich", language), key=f"formula_enrich_{workspace_id}"):
+        return
+
+    added_records, added_embeddings = _run_formula_enrichment(workspace_id, provider, selection, config)
+    if added_records:
+        st.sidebar.success(
+            t(
+                "formula.enrich_done",
+                language,
+                records=added_records,
+                embeddings=added_embeddings,
+            )
+        )
+        if st.session_state.get("workspace_id") == workspace_id:
+            st.session_state["messages"] = load_conversation(workspace_id)
+    else:
+        st.sidebar.info(t("formula.enrich_empty", language))
+
+
+def _run_formula_enrichment(workspace_id: str, provider, selection, config: AppConfig) -> tuple[int, int]:
+    records = load_workspace_records(workspace_id)
+    formula_images = load_workspace_formula_images(workspace_id)
+    effective_model = _effective_formula_model(selection)
+    if not effective_model:
+        return 0, 0
+
+    enrichment = enrich_formula_records(
+        provider=provider,
+        records=records,
+        formula_images=formula_images,
+        model=effective_model,
+        embed_model=selection.embed_model,
+        config=config,
+    )
+    if not enrichment.created_records:
+        return 0, 0
+
+    info = load_workspace_info(workspace_id)
+    if info is None:
+        return 0, 0
+
+    combined_records = [*records, *enrichment.created_records]
+    save_workspace_records(workspace_id, info.source_name, info.file_hash, combined_records)
+
+    existing_embeddings = load_workspace_embeddings(workspace_id)
+    save_workspace_embeddings(workspace_id, [*existing_embeddings, *enrichment.created_embeddings], selection.embed_model)
+    return len(enrichment.created_records), len(enrichment.created_embeddings)
+
+
+def _enrich_records_with_formulas(records: list[SearchRecord], workspace_id: str, provider, selection, config: AppConfig, language: str) -> list[SearchRecord]:
+    if not _can_attempt_formula_vision(selection):
+        return records
+
+    enrichment = enrich_formula_records(
+        provider=provider,
+        records=records,
+        formula_images=load_workspace_formula_images(workspace_id),
+        model=_effective_formula_model(selection),
+        embed_model=None,
+        config=config,
+    )
+    if enrichment.created_records:
+        st.sidebar.caption(
+            t(
+                "formula.auto_enrich",
+                language,
+                records=len(enrichment.created_records),
+            )
+        )
+    return [*records, *enrichment.created_records]
 
 
 def _render_debug(provider_name: str, selection, workspace_id: str | None, language: str) -> None:
@@ -637,6 +713,20 @@ def _render_formula_images(formula_images: list[dict] | None) -> None:
             continue
         st.caption(f"Формула как изображение: {filename}")
         st.image(path)
+
+
+def _can_attempt_formula_vision(selection) -> bool:
+    model = _effective_formula_model(selection)
+    if not model:
+        return False
+    if selection.vision_model:
+        return True
+    normalized = model.lower()
+    return any(token in normalized for token in ["vision", "vl", "llava", "gemma-4", "gemma4", "gpt-4o", "multimodal"])
+
+
+def _effective_formula_model(selection) -> str | None:
+    return selection.vision_model or selection.chat_model
 
 
 if __name__ == "__main__":
