@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from app.agents.query_understanding import classify_intent, extract_query_entity
 from app.providers.base import BaseProvider
 from app.retrieval.evidence import EvidenceReport, validate_evidence
-from app.retrieval.exact import SearchResult
+from app.retrieval.exact import SearchResult, normalize_text
 from app.retrieval.hybrid import HybridSearchTrace, search_hybrid
 from app.retrieval.records import SearchRecord
 from app.retrieval.vector import EmbeddingRecord
@@ -251,11 +251,10 @@ def _filter_by_target(records: list[SearchRecord], target: str) -> list[SearchRe
 
 
 def _filter_by_entity(records: list[SearchRecord], entity: str) -> list[SearchRecord]:
-    normalized_entity = _normalize_target(entity)
     return [
         record
         for record in records
-        if re.search(rf"(?<![\w]){re.escape(normalized_entity)}(?![\w])", _normalize_target(f"{record.text} {' '.join(record.section_path)}"))
+        if _entity_matches_text(f"{record.text} {' '.join(record.section_path)}", entity)
     ]
 
 
@@ -369,9 +368,9 @@ def _search_entity_records(records: list[SearchRecord], entity: str, query_type:
     results: list[SearchResult] = []
 
     for record in records:
-        haystack = _normalize_target(f"{record.text} {' '.join(record.section_path)}")
-        if not re.search(rf"(?<![\w]){re.escape(normalized_entity)}(?![\w])", haystack):
+        if not _entity_matches_text(f"{record.text} {' '.join(record.section_path)}", entity):
             continue
+        haystack = _normalize_target(f"{record.text} {' '.join(record.section_path)}")
 
         score = 40.0
         matched_terms = [entity, "entity_lookup"]
@@ -426,3 +425,11 @@ def _search_entity_records(records: list[SearchRecord], entity: str, query_type:
 
     results.sort(key=lambda item: item.score, reverse=True)
     return results[:limit]
+
+
+def _entity_matches_text(text: str, entity: str) -> bool:
+    normalized_entity = normalize_text(entity).replace(" ", "")
+    normalized_text = normalize_text(text)
+    if re.fullmatch(r"n\d+(?:\.\d+)?", normalized_entity):
+        return re.search(rf"(?<![a-z0-9]){re.escape(normalized_entity)}(?![\d\.])", normalized_text) is not None
+    return re.search(rf"(?<![\w]){re.escape(normalized_entity)}(?![\w])", normalized_text, flags=re.UNICODE) is not None
