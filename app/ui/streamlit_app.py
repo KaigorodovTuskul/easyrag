@@ -309,12 +309,12 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     code_answer = try_build_code_lookup_answer(effective_query, agent_result.results, language=language)
     if code_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
-        return code_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id)
+        return code_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
 
     norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results, language=language)
     if norm_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
-        return norm_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id)
+        return norm_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
 
     term_answer = try_build_term_lookup_answer(
         QueryUnderstanding(intent=agent_result.query_type, entity=agent_result.entity),
@@ -324,11 +324,11 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     )
     if term_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_term_lookup"
-        return term_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id)
+        return term_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
 
     if not agent_result.evidence.ok:
         st.session_state["last_debug"]["answer_mode"] = "weak_evidence_refusal"
-        return _with_suggestions(t("no_results", language), prompt, agent_result, language), _collect_formula_images(agent_result.results, formula_images_by_id)
+        return _with_suggestions(t("no_results", language), prompt, agent_result, language), _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
 
     answer_context = build_answer_context(
         effective_query,
@@ -342,12 +342,12 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     try:
         generated = provider.generate(answer_context.prompt, model=chat_model)
     except ProviderError as exc:
-        return t("model_unavailable", language, error=exc), _collect_formula_images(agent_result.results, formula_images_by_id)
+        return t("model_unavailable", language, error=exc), _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
     except Exception as exc:
-        return t("answer_failed", language, error=exc), _collect_formula_images(agent_result.results, formula_images_by_id)
+        return t("answer_failed", language, error=exc), _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
 
     answer_text = generated.text or t("empty_answer", language)
-    return _with_suggestions(answer_text, prompt, agent_result, language), _collect_formula_images(agent_result.results, formula_images_by_id)
+    return _with_suggestions(answer_text, prompt, agent_result, language), _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
 
 
 def _resolve_query_with_context(provider, records: list[SearchRecord], embeddings, entities: list[str], prompt: str, embed_model: str):
@@ -714,7 +714,12 @@ def _stream_chunks(text: str):
         yield buffer
 
 
-def _collect_formula_images(results, formula_images_by_id: dict[str, object], limit: int = 6) -> list[dict]:
+def _collect_formula_images(results, formula_images_by_id: dict[str, object], query_type: str | None = None, entity: str | None = None, limit: int = 6) -> list[dict]:
+    if query_type in {"formula", "norm"} and entity:
+        prioritized = _collect_formula_images_from_paragraph_context(results, formula_images_by_id, limit=limit)
+        if prioritized:
+            return prioritized
+
     collected: list[dict] = []
     seen: set[str] = set()
     for result in results:
@@ -730,6 +735,40 @@ def _collect_formula_images(results, formula_images_by_id: dict[str, object], li
             if len(collected) >= limit:
                 return collected
     return collected
+
+
+def _collect_formula_images_from_paragraph_context(results, formula_images_by_id: dict[str, object], limit: int = 6) -> list[dict]:
+    paragraph_results = [
+        result
+        for result in results
+        if result.record.record_type == "paragraph" and result.record.record_id.startswith("p-")
+    ]
+    if not paragraph_results:
+        return []
+
+    ordered = sorted(paragraph_results, key=lambda item: _paragraph_record_number(item.record.record_id))
+    collected: list[dict] = []
+    seen: set[str] = set()
+    for result in ordered:
+        asset_ids = result.record.metadata.get("formula_image_ids", [])
+        if not isinstance(asset_ids, list):
+            continue
+        for asset_id in asset_ids:
+            if asset_id in seen or asset_id not in formula_images_by_id:
+                continue
+            asset = formula_images_by_id[asset_id]
+            collected.append({"asset_id": asset.asset_id, "filename": asset.filename, "path": asset.relative_path})
+            seen.add(asset_id)
+            if len(collected) >= limit:
+                return collected
+    return collected
+
+
+def _paragraph_record_number(record_id: str) -> int:
+    try:
+        return int(record_id.split("-", 1)[1])
+    except Exception:
+        return 10**9
 
 
 def _render_formula_images(formula_images: list[dict] | None) -> None:

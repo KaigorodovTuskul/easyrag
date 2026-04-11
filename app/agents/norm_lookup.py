@@ -57,7 +57,7 @@ def try_build_norm_lookup_answer(query: str, results: list[SearchResult], langua
     if inferred_formula:
         lines.append(inferred_formula)
 
-    if has_unrecognized_formula_image or "по формуле" in normalize_text(text):
+    if has_unrecognized_formula_image or "рассчитывается по формуле" in normalize_text(text):
         lines.append(_formula_image_note(language))
 
     lines.append(_source_line(paragraphs[0].record.source_name, paragraphs[0].record.record_id, language))
@@ -72,7 +72,7 @@ def extract_norm_target(query: str) -> str | None:
 
     normalized = normalize_text(query)
     if "краткосрочн" in normalized and "ликвидност" in normalized:
-        return "Н2"
+        return "Н3"
     if "мгновенн" in normalized and "ликвидност" in normalized:
         return "Н2"
     if "текущ" in normalized and "ликвидност" in normalized:
@@ -131,8 +131,7 @@ def _select_anchor_context(anchor: SearchResult, results: list[SearchResult], in
     nearby = [
         result
         for result in results
-        if result.record.record_type == "paragraph"
-        and start_number <= _paragraph_sort_key(result) <= anchor_number + 6
+        if result.record.record_type == "paragraph" and start_number <= _paragraph_sort_key(result) <= anchor_number + 6
     ]
     return _dedupe_paragraphs([anchor, *nearby])
 
@@ -200,7 +199,7 @@ def _extract_components(paragraphs: list[str]) -> dict[str, str]:
             components[name] = description
 
         if name == "Лат" and "Лам" not in components and "показатель Лам" in paragraph:
-            components["Лам"] = "Упоминается как высоколиквидные активы в составе расчета Лат; детали состава Лам приведены в пункте 4.2/связанных положениях, если они есть в контексте."
+            components["Лам"] = "Упоминается как высоколиквидные активы в составе расчета Лат; детали состава Лам приведены в соседних положениях документа."
 
     return components
 
@@ -253,7 +252,8 @@ def _infer_ratio_formula(target: str, paragraphs: list[SearchResult], language: 
 
     combined = " ".join(result.record.text for result in paragraphs[:4])
     compacted = re.sub(r"\s+", " ", combined).strip()
-    if "отношение" not in normalize_text(compacted) or "рассчитывается по формуле" not in normalize_text(compacted):
+    normalized = normalize_text(compacted)
+    if "отношение" not in normalized or "рассчитывается по формуле" not in normalized:
         return None
 
     match = re.search(
@@ -293,19 +293,10 @@ def _build_simple_answer(target: str, paragraphs: list[SearchResult], language: 
     source_text = f"\n\n{_source_line(source.source_name, source.record_id, language)}" if source else ""
     if language == "en":
         return (
-            f"{target} is a bank risk limit for a related party or group of related parties.\n\n"
-            "In simple terms: how much risk the bank may take on related parties relative to its capital. "
-            "The matched text says that Крл is compared with the bank's own funds; "
-            "the formula itself appears to be inserted into the DOCX as an image and is not recognized by the current text index."
+            f"{target}: a calculation description is present in the document text."
             f"{source_text}"
         )
-    return (
-        f"{target} - это лимит риска банка на связанное с ним лицо или группу связанных лиц.\n\n"
-        "Проще: сколько банк может рискнуть на связанных с ним лиц относительно своего капитала. "
-        "В найденном тексте указано, что показатель Крл сравнивается с собственными средствами банка; "
-        "сама формула в DOCX вставлена как изображение и текущим текстовым индексом не распознана."
-        f"{source_text}"
-    )
+    return f"{target}: описание расчета есть в тексте документа.{source_text}"
 
 
 def _found_norm_line(target: str, language: str) -> str:
@@ -322,9 +313,8 @@ def _formula_image_note(language: str) -> str:
             "Vision-based formula extraction is needed to extract the exact fraction."
         )
     return (
-        "Важно: сама формула в этом DOCX, вероятно, вставлена как изображение/объект Word. "
-        "Текущий текстовый индекс извлек окружающий текст, но не распознал изображение формулы. "
-        "Для точного извлечения самой дроби нужно использовать vision-распознавание формул из изображений."
+        "Важно: сама формула в этом DOCX, вероятно, вставлена как изображение или объект Word. "
+        "Текстовый индекс извлек окружающий текст, а точная дробь берется из изображения формулы."
     )
 
 

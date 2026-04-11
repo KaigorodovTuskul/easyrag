@@ -58,7 +58,8 @@ def run_agent_retrieval(
     )
 
     if entity and query_type in {"definition", "composition", "formula", "norm"}:
-        results = _search_entity_records(candidate_records, entity, query_type, limit)
+        search_records = records if query_type in {"formula", "norm"} else candidate_records
+        results = _search_entity_records(search_records, entity, query_type, limit)
         steps.append(AgentStep("search_entity_records", {"entity": entity, "result_count": len(results)}))
     else:
         results = _run_retrieval(provider, candidate_records, candidate_embeddings, normalized_query, embed_model, mode, limit, steps)
@@ -378,6 +379,8 @@ def _search_entity_records(records: list[SearchRecord], entity: str, query_type:
 
         if record.record_type == "paragraph":
             score += 10.0
+        elif query_type in {"formula", "norm"} and record.record_type in {"table", "table_row", "table_cell"}:
+            score -= 150.0
 
         if re.search(rf"^\s*{re.escape(entity.lower())}\s*-", text, flags=re.MULTILINE):
             score += 80.0
@@ -400,6 +403,9 @@ def _search_entity_records(records: list[SearchRecord], entity: str, query_type:
         if query_type in {"formula", "norm"} and "норматив" in text:
             score += 20.0
             matched_terms.append("normative_context")
+        if query_type in {"formula", "norm"} and record.record_type == "paragraph" and re.search(rf"норматив\s+{re.escape(entity.lower())}", text):
+            score += 120.0
+            matched_terms.append("norm_anchor")
 
         if query_type == "composition" and any(term in text for term in ["включаются", "сумма", "вычитаются", "уменьшенная на", "рассчитывается как"]):
             score += 50.0
