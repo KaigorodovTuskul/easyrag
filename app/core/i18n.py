@@ -105,10 +105,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "ru": "Во время индексации распознано формул: {records}",
         "en": "Formulas recognized during indexing: {records}",
     },
-    "formula.preview_unavailable": {
-        "ru": "Предпросмотр формулы недоступен: исходный WMF/EMF рендерится некорректно текущим backend.",
-        "en": "Formula preview unavailable: the source WMF/EMF does not render correctly with the current backend.",
-    },
     "debug.title": {"ru": "Отладка", "en": "Debug"},
     "debug.workspace": {"ru": "Текущая база", "en": "Current workspace"},
     "debug.models": {"ru": "Модели", "en": "Models"},

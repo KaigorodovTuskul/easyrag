@@ -21,7 +21,6 @@ from app.retrieval.records import SearchRecord, build_search_records
 from app.storage.conversations import clear_conversation, load_conversation, save_conversation
 from app.storage.files import save_parsed_payload, save_uploaded_docx
 from app.storage.formula_images import (
-    is_vector_formula_image,
     load_workspace_formula_images,
     read_formula_image_for_display,
     save_workspace_formula_images,
@@ -706,9 +705,6 @@ def _render_formula_images(formula_images: list[dict] | None) -> None:
         try:
             stored = image_index.get(item.get("asset_id")) if item.get("asset_id") else None
             if stored is not None:
-                if is_vector_formula_image(stored):
-                    st.caption(t("formula.preview_unavailable", st.session_state.get("language", "ru")))
-                    continue
                 st.image(read_formula_image_for_display(stored))
             else:
                 st.image(path, width=900)

@@ -93,11 +93,6 @@ def read_formula_image_for_display(item: StoredFormulaImage) -> bytes:
     return _resize_image_bytes(image_bytes)
 
 
-def is_vector_formula_image(item: StoredFormulaImage) -> bool:
-    source_name = item.original_filename or item.filename
-    return Path(source_name).suffix.lower() in {".wmf", ".emf"}
-
-
 def _resize_image_bytes(image_bytes: bytes, max_width: int = 900) -> bytes:
     try:
         from PIL import Image

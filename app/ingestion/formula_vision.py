@@ -105,6 +105,54 @@ def _mime_type_for_suffix(suffix: str) -> str | None:
 
 
 def _render_vector_image_to_png(blob: bytes, suffix: str) -> bytes | None:
+    rendered = _render_vector_image_to_png_with_powerpoint(blob, suffix)
+    if rendered is not None:
+        return rendered
+
+    return _render_vector_image_to_png_with_system_drawing(blob, suffix)
+
+
+def _render_vector_image_to_png_with_powerpoint(blob: bytes, suffix: str) -> bytes | None:
+    with tempfile.TemporaryDirectory(prefix="easyrag_formula_ppt_") as temp_dir:
+        source_path = Path(temp_dir) / f"source{suffix}"
+        output_path = Path(temp_dir) / "rendered.png"
+        source_path.write_bytes(blob)
+
+        script = rf"""
+$ErrorActionPreference = 'Stop'
+$ppt = $null
+$pres = $null
+try {{
+  $ppt = New-Object -ComObject PowerPoint.Application
+  $ppt.Visible = -1
+  $pres = $ppt.Presentations.Add()
+  $slide = $pres.Slides.Add(1, 12)
+  $shape = $slide.Shapes.AddPicture('{_escape_powershell_path(source_path)}', $false, $true, 0, 0, -1, -1)
+  $slideWidth = [int]$pres.PageSetup.SlideWidth
+  $shape.LockAspectRatio = -1
+  $shape.Left = 0
+  $shape.Top = 0
+  $shape.Width = $slideWidth
+  $targetHeight = [int][Math]::Max($shape.Height, 1)
+  $slide.Export('{_escape_powershell_path(output_path)}', 'PNG', $slideWidth, $targetHeight)
+}} finally {{
+  if ($pres -ne $null) {{ $pres.Close() }}
+  if ($ppt -ne $null) {{ $ppt.Quit() }}
+}}
+"""
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0 or not output_path.exists():
+            return None
+        return output_path.read_bytes()
+
+
+def _render_vector_image_to_png_with_system_drawing(blob: bytes, suffix: str) -> bytes | None:
     with tempfile.TemporaryDirectory(prefix="easyrag_formula_") as temp_dir:
         source_path = Path(temp_dir) / f"source{suffix}"
         output_path = Path(temp_dir) / "rendered.png"
