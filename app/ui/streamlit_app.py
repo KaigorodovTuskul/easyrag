@@ -324,7 +324,7 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     )
     if term_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_term_lookup"
-        return term_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id, None, agent_result.entity)
+        return term_answer.answer, []
 
     if not agent_result.evidence.ok:
         st.session_state["last_debug"]["answer_mode"] = "weak_evidence_refusal"
