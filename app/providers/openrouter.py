@@ -10,6 +10,8 @@ from app.providers.http import HttpJsonClient
 
 class OpenRouterProvider(BaseProvider):
     name = "openrouter"
+    default_vision_model = "google/gemma-4-26b-a4b-it"
+    fallback_vision_model = "qwen/qwen3-vl-32b-instruct"
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -21,8 +23,7 @@ class OpenRouterProvider(BaseProvider):
     def list_models(self) -> list[ModelInfo]:
         if not self.config.openrouter_api_key:
             models = [self.config.openrouter_model, self.config.openrouter_embed_model]
-            if self.config.openrouter_vision_model:
-                models.append(self.config.openrouter_vision_model)
+            models.extend(self._vision_candidates())
             return [ModelInfo(name=name) for name in dict.fromkeys(models) if name]
 
         payload = self.client.get_json("/models")
@@ -40,6 +41,7 @@ class OpenRouterProvider(BaseProvider):
         return None
 
     def resolve_selection(self) -> ProviderSelection:
+        selected_vision_model = self._pick_vision_model(None if not self.config.openrouter_api_key else set())
         if not self.config.openrouter_api_key:
             return ProviderSelection(
                 provider_name=self.name,
@@ -47,7 +49,7 @@ class OpenRouterProvider(BaseProvider):
                 reason="OPENROUTER_API_KEY is not set",
                 chat_model=self.config.openrouter_model,
                 embed_model=self.config.openrouter_embed_model,
-                vision_model=self.config.openrouter_vision_model,
+                vision_model=selected_vision_model,
                 available_models=self.list_models(),
                 active_model=None,
             )
@@ -57,13 +59,14 @@ class OpenRouterProvider(BaseProvider):
         except Exception as exc:
             raise ProviderError(str(exc)) from exc
 
+        available_names = {model.name for model in models}
         return ProviderSelection(
             provider_name=self.name,
             reachable=True,
             reason="Configured OpenRouter fallback",
             chat_model=self.config.openrouter_model,
             embed_model=self.config.openrouter_embed_model,
-            vision_model=self.config.openrouter_vision_model,
+            vision_model=self._pick_vision_model(available_names),
             available_models=models,
             active_model=None,
         )
@@ -150,3 +153,20 @@ class OpenRouterProvider(BaseProvider):
             for item in data
             if isinstance(item, dict)
         ]
+
+    def _pick_vision_model(self, available_names: set[str] | None) -> str | None:
+        candidates = self._vision_candidates()
+        if available_names is None or not available_names:
+            return candidates[0] if candidates else None
+        for candidate in candidates:
+            if candidate in available_names:
+                return candidate
+        return candidates[0] if candidates else None
+
+    def _vision_candidates(self) -> list[str]:
+        candidates = [
+            self.config.openrouter_vision_model,
+            self.default_vision_model,
+            self.fallback_vision_model,
+        ]
+        return [candidate for index, candidate in enumerate(candidates) if candidate and candidate not in candidates[:index]]

@@ -10,6 +10,7 @@ from app.providers.http import HttpJsonClient
 
 class OllamaProvider(BaseProvider):
     name = "ollama"
+    default_vision_fallback = "qwen3-vl:32b"
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -144,6 +145,15 @@ class OllamaProvider(BaseProvider):
         return self.config.ollama_default_embed_model
 
     def _pick_vision_model(self, available_names: set[str]) -> str | None:
-        if self.config.ollama_default_vision_model in available_names:
-            return self.config.ollama_default_vision_model
-        return self.config.ollama_default_vision_model or None
+        for candidate in self._vision_candidates():
+            if candidate in available_names:
+                return candidate
+        return self._vision_candidates()[0] if self._vision_candidates() else None
+
+    def _vision_candidates(self) -> list[str]:
+        candidates = [
+            self.config.ollama_default_vision_model,
+            "gemma4:26b",
+            self.default_vision_fallback,
+        ]
+        return [candidate for index, candidate in enumerate(candidates) if candidate and candidate not in candidates[:index]]

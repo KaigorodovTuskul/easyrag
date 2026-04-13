@@ -107,7 +107,7 @@ If you want the default EasyRAG experience, start here:
 1. Upload one DOCX file in the sidebar
 2. Pick the answer model
 3. Pick the embedding model
-4. Pick the vision model, or leave it as `None`
+4. Pick the vision model, or keep the provider default
 5. Ask questions in natural language
 
 Recommended query patterns:
@@ -125,10 +125,11 @@ EasyRAG supports separate model roles in the UI:
 - **Embedding model**: used for semantic retrieval
 - **Vision model**: used for formula extraction from images
 
-Behavior when no vision model is selected:
+Default vision model behavior:
 
-- the UI defaults to `None`
-- EasyRAG tries to use the selected answer model as the vision model if that model supports image input
+- OpenRouter prefers `google/gemma-4-26b-a4b-it`, then falls back to `qwen/qwen3-vl-32b-instruct` if Gemma is unavailable
+- Ollama prefers `gemma4:26b`, then falls back to `qwen3-vl:32b` if Gemma is unavailable
+- if no separate vision model is selected in the UI, EasyRAG can still try the selected answer model for image input
 
 ## Configuration
 
@@ -144,7 +145,7 @@ LLM_PROVIDER=openrouter
 OLLAMA_BASE_URL=http://10.32.2.36:11434
 OLLAMA_DEFAULT_MODEL=gemma4:26b
 OLLAMA_DEFAULT_EMBED_MODEL=qwen3-embedding:8b
-OLLAMA_DEFAULT_VISION_MODEL=
+OLLAMA_DEFAULT_VISION_MODEL=gemma4:26b
 OLLAMA_TAGS_PATH=/api/tags
 OLLAMA_PS_PATH=/api/ps
 OLLAMA_CONTROL_TIMEOUT_SECONDS=2
@@ -154,7 +155,7 @@ OPENROUTER_API_KEY=
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_MODEL=google/gemma-4-26b-a4b-it
 OPENROUTER_EMBED_MODEL=qwen/qwen3-embedding-8b
-OPENROUTER_VISION_MODEL=
+OPENROUTER_VISION_MODEL=google/gemma-4-26b-a4b-it
 
 EMBEDDING_BATCH_SIZE=16
 EMBEDDING_RECORD_TYPES=paragraph,table_row
@@ -168,7 +169,8 @@ Notes:
 
 - `APP_LANGUAGE` supports `ru` and `en`
 - `EMBEDDING_RECORD_TYPES=paragraph,table_row` is the default because exact/BM25 already covers many table questions well
-- `OLLAMA_DEFAULT_VISION_MODEL` and `OPENROUTER_VISION_MODEL` are optional
+- `OLLAMA_DEFAULT_VISION_MODEL` defaults to `gemma4:26b` and falls back to `qwen3-vl:32b` if unavailable
+- `OPENROUTER_VISION_MODEL` defaults to `google/gemma-4-26b-a4b-it` and falls back to `qwen/qwen3-vl-32b-instruct` if unavailable
 
 ## Retrieval Strategy
 
