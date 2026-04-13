@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -137,6 +138,14 @@ def list_workspaces() -> list[WorkspaceInfo]:
 
 def load_workspace_info(workspace_id: str) -> WorkspaceInfo | None:
     return _read_manifest(workspace_manifest_path(workspace_id))
+
+
+def delete_workspace(workspace_id: str) -> bool:
+    target = workspace_dir(workspace_id)
+    if not target.exists():
+        return False
+    shutil.rmtree(target)
+    return True
 
 
 def estimate_tokens(text: str) -> int:

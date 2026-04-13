@@ -13,7 +13,6 @@ from app.agents.query_understanding import QueryUnderstanding, build_query_sugge
 from app.agents.term_lookup import try_build_term_lookup_answer
 from app.core.config import AppConfig
 from app.core.i18n import SUPPORTED_LANGUAGES, normalize_language, t
-from app.eval.runner import run_eval
 from app.ingestion.formula_enrichment import enrich_formula_records
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.ollama import OllamaProvider
@@ -29,6 +28,7 @@ from app.storage.formula_images import (
 )
 from app.storage.entities import save_workspace_entities
 from app.storage.workspaces import (
+    delete_workspace,
     estimate_tokens,
     file_hash_for_content,
     list_workspaces,
@@ -223,6 +223,9 @@ def _render_sidebar_workspace(config: AppConfig, provider, selection, language: 
         _render_formula_enrichment_controls(selected_workspace_id, provider, selection, config, language)
         if st.sidebar.button(t("clear_chat", language)):
             _clear_chat_context(selected_workspace_id)
+            st.rerun()
+        if st.sidebar.button(t("workspace.delete", language), type="secondary"):
+            _delete_workspace(selected_workspace_id, language)
             st.rerun()
 
     _render_debug(provider.name, selection, selected_workspace_id, language)
@@ -430,6 +433,25 @@ def _clear_chat_context(workspace_id: str) -> None:
         st.session_state.pop(key, None)
 
 
+def _delete_workspace(workspace_id: str, language: str) -> None:
+    try:
+        delete_workspace(workspace_id)
+    except Exception as exc:
+        st.sidebar.warning(t("workspace.delete_failed", language, error=exc))
+        return
+
+    for key in [
+        "workspace_id",
+        "messages",
+        "last_debug",
+        "last_user_query",
+        "last_query_target",
+        "last_effective_query",
+    ]:
+        st.session_state.pop(key, None)
+    st.sidebar.success(t("workspace.deleted", language))
+
+
 def _prepare_uploaded_workspace(uploaded_file, provider, selection, config: AppConfig, language: str) -> str:
     try:
         from app.ingestion.docx_parser import parse_docx_bytes
@@ -635,27 +657,6 @@ def _render_debug(provider_name: str, selection, workspace_id: str | None, langu
 
         st.write(t("debug.last_query", language))
         st.json(st.session_state.get("last_debug", {}))
-
-        if st.button(t("debug.run_eval", language)):
-            try:
-                results = run_eval()
-            except Exception as exc:
-                st.error(t("debug.eval_failed", language, error=exc))
-                return
-            hit_at_1 = sum(1 for result in results if result.hit_at_1)
-            hit_at_3 = sum(1 for result in results if result.hit_at_3)
-            hybrid_hit_at_1 = sum(1 for result in results if result.hybrid_hit_at_1)
-            hybrid_hit_at_3 = sum(1 for result in results if result.hybrid_hit_at_3)
-            st.write(
-                {
-                    t("debug.cases", language): len(results),
-                    "exact hit@1": hit_at_1,
-                    "exact hit@3": hit_at_3,
-                    "hybrid hit@1": hybrid_hit_at_1,
-                    "hybrid hit@3": hybrid_hit_at_3,
-                }
-            )
-            st.dataframe([asdict(result) for result in results], use_container_width=True, hide_index=True)
 
 
 def _workspace_label(info, language: str) -> str:
