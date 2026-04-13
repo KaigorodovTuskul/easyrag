@@ -146,6 +146,7 @@ OLLAMA_DEFAULT_VISION_MODEL=gemma4:26b
 OPENROUTER_API_KEY=
 OPENROUTER_MODEL=google/gemma-4-26b-a4b-it
 OPENROUTER_EMBED_MODEL=qwen/qwen3-embedding-8b
+OPENROUTER_VISION_MODEL=google/gemma-4-26b-a4b-it
 
 EMBEDDING_BATCH_SIZE=16
 EMBEDDING_RECORD_TYPES=paragraph,table_row
@@ -156,8 +157,7 @@ Notes:
 - `APP_LANGUAGE` supports `ru` and `en`
 - `EMBEDDING_RECORD_TYPES=paragraph,table_row` is the default because exact/BM25 already covers many table questions well
 - `OLLAMA_DEFAULT_VISION_MODEL` defaults to `gemma4:26b`; if it is unavailable, EasyRAG falls back to `qwen3-vl:32b`
-- OpenRouter vision defaults are built into the app:
-  `google/gemma-4-26b-a4b-it`, then `qwen/qwen3-vl-32b-instruct`
+- `OPENROUTER_VISION_MODEL` defaults to `google/gemma-4-26b-a4b-it`; if it is unavailable, EasyRAG falls back to `qwen/qwen3-vl-32b-instruct`
 - advanced values such as provider base URLs and timeouts are intentionally kept in code defaults instead of `.env.example`
 
 ## Retrieval Strategy
