@@ -14,6 +14,10 @@ class HybridSearchTrace:
     bm25_count: int
     vector_count: int
     fused_count: int
+    exact_contribution: int
+    bm25_contribution: int
+    vector_contribution: int
+    top_sources: str
 
 
 def search_hybrid(
@@ -27,12 +31,20 @@ def search_hybrid(
     bm25_results = search_bm25(records, query=query, limit=limit)
     vector_results = search_vector(embedding_records, query_vector or [], limit=limit)
     fused = _fuse_results(exact_results, bm25_results, vector_results)
+    exact_ids = {result.record.record_id for result in exact_results}
+    bm25_ids = {result.record.record_id for result in bm25_results}
+    vector_ids = {result.record.record_id for result in vector_results}
+    fused_ids = {result.record.record_id for result in fused}
 
     return fused[:limit], HybridSearchTrace(
         exact_count=len(exact_results),
         bm25_count=len(bm25_results),
         vector_count=len(vector_results),
         fused_count=len(fused),
+        exact_contribution=len(fused_ids & exact_ids),
+        bm25_contribution=len(fused_ids & bm25_ids),
+        vector_contribution=len(fused_ids & vector_ids),
+        top_sources=_top_sources_summary(fused[:limit]),
     )
 
 
@@ -96,3 +108,15 @@ def _type_boost(record_type: str) -> float:
     if record_type == "table":
         return 5.0
     return 0.0
+
+
+def _top_sources_summary(results: list[SearchResult], limit: int = 5) -> str:
+    source_names: list[str] = []
+    for result in results:
+        name = result.record.source_name.strip()
+        if not name or name in source_names:
+            continue
+        source_names.append(name)
+        if len(source_names) >= limit:
+            break
+    return ", ".join(source_names)
