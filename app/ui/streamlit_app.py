@@ -312,7 +312,7 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     code_answer = try_build_code_lookup_answer(effective_query, agent_result.results, language=language)
     if code_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
-        return code_answer.answer, []
+        return code_answer.answer, _collect_formula_images_for_code_answer(code_answer, agent_result.results, formula_images_by_id)
 
     norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results, language=language)
     if norm_answer is not None:
@@ -738,6 +738,46 @@ def _collect_formula_images(results, formula_images_by_id: dict[str, object], qu
     return collected
 
 
+def _collect_formula_images_for_code_answer(code_answer, results, formula_images_by_id: dict[str, object], limit: int = 6) -> list[dict]:
+    direct = _collect_formula_images_for_record_ids(results, {code_answer.source_record_id}, formula_images_by_id, limit=limit)
+    if direct:
+        return direct
+
+    if not code_answer.asks_calculation or not code_answer.related_norms:
+        return []
+
+    norm_related = [
+        result
+        for result in results
+        if result.record.record_type == "paragraph"
+        and any(_record_mentions_norm(result.record.text, norm) for norm in code_answer.related_norms)
+    ]
+    if not norm_related:
+        return []
+
+    return _collect_formula_images_from_anchor_window(norm_related, formula_images_by_id, before=0, after=3, limit=limit)
+
+
+def _collect_formula_images_for_record_ids(results, record_ids: set[str], formula_images_by_id: dict[str, object], limit: int = 6) -> list[dict]:
+    collected: list[dict] = []
+    seen: set[str] = set()
+    for result in results:
+        if result.record.record_id not in record_ids:
+            continue
+        asset_ids = result.record.metadata.get("formula_image_ids", [])
+        if not isinstance(asset_ids, list):
+            continue
+        for asset_id in asset_ids:
+            if asset_id in seen or asset_id not in formula_images_by_id:
+                continue
+            asset = formula_images_by_id[asset_id]
+            collected.append({"asset_id": asset.asset_id, "filename": asset.filename, "path": asset.relative_path})
+            seen.add(asset_id)
+            if len(collected) >= limit:
+                return collected
+    return collected
+
+
 def _collect_formula_images_from_anchor_window(
     results,
     formula_images_by_id: dict[str, object],
@@ -787,6 +827,12 @@ def _paragraph_record_number(record_id: str) -> int:
         return int(record_id.split("-", 1)[1])
     except Exception:
         return 10**9
+
+
+def _record_mentions_norm(text: str, norm: str) -> bool:
+    normalized_text = re.sub(r"\s+", "", text.lower().replace("ё", "е").replace("н", "n"))
+    normalized_norm = re.sub(r"\s+", "", norm.lower().replace("ё", "е").replace("н", "n"))
+    return normalized_norm in normalized_text
 
 
 def _render_formula_images(formula_images: list[dict] | None) -> None:

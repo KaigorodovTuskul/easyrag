@@ -11,6 +11,8 @@ class CodeLookupAnswer:
     target_code: str
     answer: str
     source_record_id: str
+    related_norms: list[str]
+    asks_calculation: bool
     confidence: str
 
 
@@ -35,7 +37,8 @@ def try_build_code_lookup_answer(query: str, results: list[SearchResult], langua
     if normatives:
         answer_lines.append(_format_normatives_line(normatives, language))
 
-    if _asks_calculation(query):
+    asks_calculation = _asks_calculation(query)
+    if asks_calculation:
         answer_lines.append(_format_missing_formula_line(language))
 
     answer_lines.append(_format_source_line(row_result.record.source_name, row_result.record.record_id, language))
@@ -44,6 +47,8 @@ def try_build_code_lookup_answer(query: str, results: list[SearchResult], langua
         target_code=target_code,
         answer="\n\n".join(answer_lines),
         source_record_id=row_result.record.record_id,
+        related_norms=_extract_norm_targets(normatives or ""),
+        asks_calculation=asks_calculation,
         confidence="high",
     )
 
@@ -99,6 +104,15 @@ def _asks_calculation(query: str) -> bool:
             "how is",
         ]
     )
+
+
+def _extract_norm_targets(value: str) -> list[str]:
+    found: list[str] = []
+    for match in re.finditer(r"\b[РќN]\s*\d+(?:\.\d+)?\b", value, flags=re.IGNORECASE):
+        normalized = match.group(0).replace(" ", "").upper().replace("N", "Рќ")
+        if normalized not in found:
+            found.append(normalized)
+    return found
 
 
 def _format_code_line(target_code: str, content: str, language: str) -> str:
