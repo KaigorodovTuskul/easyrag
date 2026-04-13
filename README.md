@@ -136,39 +136,28 @@ Default vision model behavior:
 Start from `.env.example`:
 
 ```env
-APP_ENV=dev
-APP_HOST=0.0.0.0
-APP_PORT=8501
 APP_LANGUAGE=ru
-LLM_PROVIDER=openrouter
 
 OLLAMA_BASE_URL=http://10.32.2.36:11434
 OLLAMA_DEFAULT_MODEL=gemma4:26b
 OLLAMA_DEFAULT_EMBED_MODEL=qwen3-embedding:8b
-OLLAMA_DEFAULT_VISION_MODEL=gemma4:26b
-OLLAMA_CONTROL_TIMEOUT_SECONDS=2
-OLLAMA_INFERENCE_TIMEOUT_SECONDS=300
 
 OPENROUTER_API_KEY=
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_MODEL=google/gemma-4-26b-a4b-it
 OPENROUTER_EMBED_MODEL=qwen/qwen3-embedding-8b
-OPENROUTER_VISION_MODEL=google/gemma-4-26b-a4b-it
 
 EMBEDDING_BATCH_SIZE=16
 EMBEDDING_RECORD_TYPES=paragraph,table_row
-VECTOR_BACKEND=local
-VECTOR_COLLECTION=easyrag_chunks
-RERANKER_ENABLED=false
-TRACE_AGENT_STEPS=true
 ```
 
 Notes:
 
 - `APP_LANGUAGE` supports `ru` and `en`
 - `EMBEDDING_RECORD_TYPES=paragraph,table_row` is the default because exact/BM25 already covers many table questions well
-- `OLLAMA_DEFAULT_VISION_MODEL` defaults to `gemma4:26b` and falls back to `qwen3-vl:32b` if unavailable
-- `OPENROUTER_VISION_MODEL` defaults to `google/gemma-4-26b-a4b-it` and falls back to `qwen/qwen3-vl-32b-instruct` if unavailable
+- vision defaults are built into the app:
+  OpenRouter prefers `google/gemma-4-26b-a4b-it`, then `qwen/qwen3-vl-32b-instruct`
+  Ollama prefers `gemma4:26b`, then `qwen3-vl:32b`
+- advanced values such as provider base URLs and timeouts are intentionally kept in code defaults instead of `.env.example`
 
 ## Retrieval Strategy
 

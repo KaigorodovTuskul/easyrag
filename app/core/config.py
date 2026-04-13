@@ -7,19 +7,9 @@ from pathlib import Path
 from app.core.env import load_dotenv
 
 
-def _get_bool(raw_value: str, default: bool = False) -> bool:
-    if raw_value is None:
-        return default
-    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 @dataclass(slots=True)
 class AppConfig:
-    app_env: str
-    app_host: str
-    app_port: int
     app_language: str
-    llm_provider: str
     ollama_base_url: str
     ollama_default_model: str
     ollama_default_embed_model: str
@@ -33,10 +23,6 @@ class AppConfig:
     openrouter_vision_model: str | None
     embedding_batch_size: int
     embedding_record_types: tuple[str, ...]
-    vector_backend: str
-    vector_collection: str
-    reranker_enabled: bool
-    trace_agent_steps: bool
 
     @classmethod
     def load(cls, dotenv_path: str | Path = ".env") -> "AppConfig":
@@ -44,11 +30,7 @@ class AppConfig:
         merged = {**values, **os.environ}
 
         return cls(
-            app_env=merged.get("APP_ENV", "dev"),
-            app_host=merged.get("APP_HOST", "0.0.0.0"),
-            app_port=int(merged.get("APP_PORT", "8501")),
             app_language=merged.get("APP_LANGUAGE", "ru").lower(),
-            llm_provider=merged.get("LLM_PROVIDER", "openrouter"),
             ollama_base_url=merged.get("OLLAMA_BASE_URL", "http://10.32.2.36:11434").rstrip("/"),
             ollama_default_model=merged.get("OLLAMA_DEFAULT_MODEL", "gemma4:26b"),
             ollama_default_embed_model=merged.get("OLLAMA_DEFAULT_EMBED_MODEL", "qwen3-embedding:8b"),
@@ -62,10 +44,6 @@ class AppConfig:
             openrouter_vision_model=_get_optional_str(merged.get("OPENROUTER_VISION_MODEL", "google/gemma-4-26b-a4b-it")),
             embedding_batch_size=max(1, int(merged.get("EMBEDDING_BATCH_SIZE", "16"))),
             embedding_record_types=_get_csv_tuple(merged.get("EMBEDDING_RECORD_TYPES", "paragraph,table_row")),
-            vector_backend=merged.get("VECTOR_BACKEND", "local"),
-            vector_collection=merged.get("VECTOR_COLLECTION", "easyrag_chunks"),
-            reranker_enabled=_get_bool(merged.get("RERANKER_ENABLED"), default=False),
-            trace_agent_steps=_get_bool(merged.get("TRACE_AGENT_STEPS"), default=True),
         )
 
 
