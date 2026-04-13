@@ -75,7 +75,7 @@ start_app.bat
 
 Then open:
 
-- `http://localhost:8501`
+- the local URL shown by Streamlit in the terminal
 
 ### Option 2: venv
 

@@ -7,4 +7,4 @@ if (-not (Test-Path $python)) {
     throw "Portable Python not found at $python"
 }
 
-& $python -m streamlit run "$root\app\ui\streamlit_app.py" --server.address 0.0.0.0 --server.port 8501
+& $python -m streamlit run "$root\app\ui\streamlit_app.py"
