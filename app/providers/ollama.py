@@ -11,6 +11,8 @@ from app.providers.http import HttpJsonClient
 class OllamaProvider(BaseProvider):
     name = "ollama"
     default_vision_fallback = "qwen3-vl:32b"
+    tags_path = "/api/tags"
+    ps_path = "/api/ps"
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -24,7 +26,7 @@ class OllamaProvider(BaseProvider):
         )
 
     def list_models(self) -> list[ModelInfo]:
-        payload = self.control_client.get_json(self.config.ollama_tags_path)
+        payload = self.control_client.get_json(self.tags_path)
         models = payload.get("models", [])
 
         result: list[ModelInfo] = []
@@ -41,7 +43,7 @@ class OllamaProvider(BaseProvider):
         return result
 
     def get_active_model(self) -> str | None:
-        payload = self.control_client.get_json(self.config.ollama_ps_path)
+        payload = self.control_client.get_json(self.ps_path)
         models = payload.get("models", [])
         if not models:
             return None
