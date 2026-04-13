@@ -14,9 +14,10 @@ def build_embedding_index(
     model: str,
     max_records: int | None = None,
     batch_size: int = 16,
+    record_types: tuple[str, ...] | list[str] | None = None,
     progress_callback: Callable[[int, int, SearchRecord, int], None] | None = None,
 ) -> list[EmbeddingRecord]:
-    selected = _select_embedding_records(records)
+    selected = select_embedding_records(records, record_types=record_types)
     selected = selected[:max_records] if max_records is not None else selected
     embedding_records: list[EmbeddingRecord] = []
     batch_size = max(1, batch_size)
@@ -50,6 +51,13 @@ def _embedding_text(record: SearchRecord) -> str:
     )
 
 
-def _select_embedding_records(records: list[SearchRecord]) -> list[SearchRecord]:
+def select_embedding_records(
+    records: list[SearchRecord],
+    record_types: tuple[str, ...] | list[str] | None = None,
+) -> list[SearchRecord]:
+    allowed_types = {item.strip() for item in (record_types or ()) if item and item.strip()}
+    if allowed_types:
+        return [record for record in records if record.record_type in allowed_types and record.text.strip()]
+
     # Full table records duplicate row/cell text and slow embedding indexing significantly.
     return [record for record in records if record.record_type != "table" and record.text.strip()]
