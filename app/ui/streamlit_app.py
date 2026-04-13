@@ -312,7 +312,7 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     code_answer = try_build_code_lookup_answer(effective_query, agent_result.results, language=language)
     if code_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
-        return code_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
+        return code_answer.answer, []
 
     norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results, language=language)
     if norm_answer is not None:
