@@ -1,6 +1,6 @@
 # EasyRAG
 
-Local-first RAG for DOCX documents with exact search, BM25, hybrid retrieval, multimodal formula extraction, and a Streamlit chat UI.
+Local-first RAG for DOCX documents with exact search, BM25, hybrid retrieval, query routing, multimodal formula extraction, and a Streamlit chat UI.
 
 ![EasyRAG banner](docs/assets/banner.jpeg)
 
@@ -29,7 +29,9 @@ EasyRAG is built around a practical retrieval stack rather than a single LLM cal
 - **Exact search** catches codes, norms, account numbers, and literal fragments
 - **BM25** improves lexical recall for structured prose
 - **Hybrid retrieval** adds embedding-based semantic search where it helps
+- **Intent-aware routing** switches between direct retrieval and full-document reading for small documents
 - **Deterministic answer builders** handle norms, terms, composition questions, and code lookups
+- **Light reranking** improves entity and topic matching after retrieval
 - **Vision-based formula extraction** handles DOCX formulas stored as images
 - **Local workspace caching** avoids reparsing and reembedding on every launch
 
@@ -37,9 +39,10 @@ EasyRAG is built around a practical retrieval stack rather than a single LLM cal
 
 - Parses DOCX paragraphs and tables into searchable records
 - Builds a per-document workspace with cached records, embeddings, and assets
+- Lets you reopen or delete saved workspaces from the sidebar
 - Lets you choose answer, embedding, and vision models separately
 - Extracts formula text from embedded images using a multimodal model
-- Shows relevant formula images inline in answers when needed
+- Shows recognized formulas and relevant formula images inline when needed
 - Handles questions like:
   - `How is the H2 ratio calculated?`
   - `What is included in Lat?`
@@ -76,6 +79,11 @@ start_app.bat
 Then open:
 
 - the local URL shown by Streamlit in the terminal
+
+Notes:
+
+- `start_app.bat` and `scripts\run_streamlit.ps1` do not force `--server.port` or `--server.address`
+- Streamlit uses its normal local defaults, which helps avoid hard conflicts on a fixed port
 
 ### Option 2: venv
 
@@ -158,16 +166,17 @@ Notes:
 - `EMBEDDING_RECORD_TYPES=paragraph,table_row` is the default because exact/BM25 already covers many table questions well
 - `OLLAMA_DEFAULT_VISION_MODEL` defaults to `gemma4:26b`; if it is unavailable, EasyRAG falls back to `qwen3-vl:32b`
 - `OPENROUTER_VISION_MODEL` defaults to `google/gemma-4-26b-a4b-it`; if it is unavailable, EasyRAG falls back to `qwen/qwen3-vl-32b-instruct`
-- advanced values such as provider base URLs and timeouts are intentionally kept in code defaults instead of `.env.example`
+- `.env.example` intentionally stays short; less common provider and transport settings remain in code defaults
 
 ## Retrieval Strategy
 
 EasyRAG does not treat every question the same way.
 
-- **Norm questions** like `H2`, `H3`, `H4` use intent-aware retrieval with paragraph anchoring
-- **Composition questions** like `what is included in Lat` prefer deterministic extraction from nearby definitions
-- **Code lookups** prefer exact/table-oriented retrieval
-- **General questions** can use hybrid retrieval with embeddings
+- **Lookup questions** for norms, codes, and short entities prefer exact and table-oriented retrieval
+- **Comparison questions** can be routed into a compare flow instead of collapsing to one entity
+- **Topic questions** like `which codes относятся к ...` can trigger topic-oriented retrieval and answer building
+- **Small documents** can be answered through focused full-document context instead of narrow top-k retrieval
+- **General questions** can use hybrid retrieval with embeddings and post-retrieval reranking
 
 This matters because structured documents are not uniform:
 
@@ -179,7 +188,9 @@ This matters because structured documents are not uniform:
 
 - answer model, embedding model, and vision model are selected separately in the sidebar
 - there are no extra custom-model input fields in the current UI
-- formula images are shown only for locally relevant norm/formula answers
+- saved workspaces can be selected and deleted in the sidebar
+- formula images are shown only for locally relevant formula-grounded answers
+- recognized formulas are rendered as LaTeX when the extracted text looks compatible
 - deterministic term/composition answers intentionally do not auto-attach unrelated formula images
 
 ## Project Layout
