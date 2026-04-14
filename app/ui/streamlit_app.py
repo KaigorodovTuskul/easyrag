@@ -5,7 +5,7 @@ import re
 import time
 
 from app.agents.answer import build_answer_context
-from app.agents.code_lookup import try_build_code_lookup_answer
+from app.agents.code_lookup import try_build_code_lookup_answer, try_build_code_topic_answer
 from app.agents.controller import run_agent_retrieval
 from app.agents.embedding_indexer import build_embedding_index, select_embedding_records
 from app.agents.norm_lookup import try_build_norm_lookup_answer
@@ -283,6 +283,18 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     embeddings = load_workspace_embeddings(workspace_id)
     entities = save_workspace_entities(workspace_id, records)
     formula_images_by_id = load_workspace_formula_images(workspace_id)
+
+    if _is_document_summary_query(prompt):
+        summary_answer = _build_document_summary(records, language)
+        st.session_state["last_debug"] = {
+            "query": prompt,
+            "effective_query": prompt,
+            "query_resolution": "document_summary",
+            "workspace_id": workspace_id,
+            "answer_mode": "deterministic_document_summary",
+        }
+        return summary_answer, []
+
     effective_query, agent_result, query_resolution = _resolve_query_with_context(
         provider=provider,
         records=records,
@@ -314,6 +326,11 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
         return code_answer.answer, _collect_formula_images_for_code_answer(code_answer, agent_result.results, formula_images_by_id)
 
+    code_topic_answer = try_build_code_topic_answer(effective_query, records, language=language)
+    if code_topic_answer is not None:
+        st.session_state["last_debug"]["answer_mode"] = "deterministic_code_topic_lookup"
+        return code_topic_answer.answer, _collect_formula_images_for_record_ids(agent_result.results, set(code_topic_answer.source_record_ids), formula_images_by_id)
+
     norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results, language=language)
     if norm_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
@@ -331,7 +348,7 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
 
     if not agent_result.evidence.ok:
         st.session_state["last_debug"]["answer_mode"] = "weak_evidence_refusal"
-        return _with_suggestions(t("no_results", language), prompt, agent_result, language), _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
+        return _with_suggestions(t("no_results", language), prompt, agent_result, language), []
 
     answer_context = build_answer_context(
         effective_query,
@@ -345,12 +362,18 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     try:
         generated = provider.generate(answer_context.prompt, model=chat_model)
     except ProviderError as exc:
-        return t("model_unavailable", language, error=exc), _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
+        return t("model_unavailable", language, error=exc), []
     except Exception as exc:
-        return t("answer_failed", language, error=exc), _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
+        return t("answer_failed", language, error=exc), []
 
     answer_text = generated.text or t("empty_answer", language)
-    return _with_suggestions(answer_text, prompt, agent_result, language), _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
+    return _with_suggestions(answer_text, prompt, agent_result, language), _collect_formula_images_for_citations(
+        answer_context.citations,
+        agent_result.results,
+        formula_images_by_id,
+        query_type=agent_result.query_type,
+        question=effective_query,
+    )
 
 
 def _resolve_query_with_context(provider, records: list[SearchRecord], embeddings, entities: list[str], prompt: str, embed_model: str):
@@ -715,6 +738,58 @@ def _stream_chunks(text: str):
         yield buffer
 
 
+def _is_document_summary_query(prompt: str) -> bool:
+    normalized = prompt.lower().replace("ё", "е")
+    return any(
+        marker in normalized
+        for marker in [
+            "о чем документ",
+            "о чем этот документ",
+            "расскажи вкратце",
+            "кратко о документе",
+            "краткое содержание",
+            "summary of the document",
+            "summarize the document",
+            "what is this document about",
+        ]
+    )
+
+
+def _build_document_summary(records: list[SearchRecord], language: str) -> str:
+    title_parts = [record.text.strip() for record in records[:12] if record.record_type == "paragraph" and record.text.strip()]
+    title = " ".join(title_parts[:8]).strip()
+    headings: list[str] = []
+    for record in records:
+        if record.record_type != "paragraph":
+            continue
+        if not record.section_path:
+            continue
+        section = record.section_path[-1].strip()
+        if section and section not in headings:
+            headings.append(section)
+        if len(headings) >= 4:
+            break
+
+    appendix_rows = [record for record in records if record.record_type == "table_row" and "Приложение 1" in record.section_path]
+    if language == "en":
+        lines = [f"The document is about banking mandatory ratios and related calculation codes."]
+        if title:
+            lines.append(f"Title context: {title}.")
+        if headings:
+            lines.append(f"Main sections: {', '.join(headings)}.")
+        if appendix_rows:
+            lines.append("It also contains Appendix 1 with codes used in ratio calculations and risk-related indicators.")
+    else:
+        lines = ["Документ посвящен обязательным нормативам банков и кодам, которые используются при их расчете."]
+        if title:
+            lines.append(f"Контекст заголовка: {title}.")
+        if headings:
+            lines.append(f"Основные разделы: {', '.join(headings)}.")
+        if appendix_rows:
+            lines.append("В документе также есть Приложение 1 с кодами, используемыми при расчете нормативов и связанных рисков.")
+    return "\n\n".join(lines)
+
+
 def _collect_formula_images(results, formula_images_by_id: dict[str, object], query_type: str | None = None, entity: str | None = None, limit: int = 6) -> list[dict]:
     if query_type in {"formula", "norm"} and entity:
         prioritized = _collect_formula_images_from_anchor_window(results, formula_images_by_id, before=0, after=3, limit=limit)
@@ -736,6 +811,27 @@ def _collect_formula_images(results, formula_images_by_id: dict[str, object], qu
             if len(collected) >= limit:
                 return collected
     return collected
+
+
+def _collect_formula_images_for_citations(
+    citations: list[dict[str, str | float]],
+    results,
+    formula_images_by_id: dict[str, object],
+    query_type: str | None = None,
+    question: str | None = None,
+    limit: int = 6,
+) -> list[dict]:
+    normalized_question = (question or "").lower().replace("ё", "е")
+    asks_formula = query_type in {"formula", "norm"} or any(
+        token in normalized_question for token in ["формул", "рассчит", "calculate", "formula", "how is"]
+    )
+    if not asks_formula:
+        return []
+
+    cited_ids = {str(item.get("id")) for item in citations if item.get("id")}
+    if not cited_ids:
+        return []
+    return _collect_formula_images_for_record_ids(results, cited_ids, formula_images_by_id, limit=limit)
 
 
 def _collect_formula_images_for_code_answer(code_answer, results, formula_images_by_id: dict[str, object], limit: int = 6) -> list[dict]:

@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from app.retrieval.exact import SearchResult, normalize_text
+from app.retrieval.records import SearchRecord
 
 
 @dataclass(slots=True)
@@ -13,6 +14,13 @@ class CodeLookupAnswer:
     source_record_id: str
     related_norms: list[str]
     asks_calculation: bool
+    confidence: str
+
+
+@dataclass(slots=True)
+class CodeTopicAnswer:
+    answer: str
+    source_record_ids: list[str]
     confidence: str
 
 
@@ -50,6 +58,28 @@ def try_build_code_lookup_answer(query: str, results: list[SearchResult], langua
         related_norms=_extract_norm_targets(normatives or ""),
         asks_calculation=asks_calculation,
         confidence="high",
+    )
+
+
+def try_build_code_topic_answer(query: str, records: list[SearchRecord], language: str = "ru") -> CodeTopicAnswer | None:
+    if not _looks_like_code_topic_query(query):
+        return None
+
+    target_code = extract_code_target(query)
+    asks_calculation = _asks_calculation(query)
+    topic_rows = _find_code_topic_rows(query, records, target_code=target_code)
+    if not topic_rows:
+        return None
+
+    if target_code:
+        answer = _format_code_group_answer(target_code, topic_rows, language, asks_calculation=asks_calculation)
+    else:
+        answer = _format_code_topic_answer(query, topic_rows, language)
+
+    return CodeTopicAnswer(
+        answer=answer,
+        source_record_ids=[record.record_id for record in topic_rows],
+        confidence="medium",
     )
 
 
@@ -113,6 +143,137 @@ def _extract_norm_targets(value: str) -> list[str]:
         if normalized not in found:
             found.append(normalized)
     return found
+
+
+def _looks_like_code_topic_query(query: str) -> bool:
+    normalized = normalize_text(query)
+    if not any(term in normalized for term in ["код", "коды", "code", "codes"]):
+        return False
+    return extract_code_target(query) is None or any(term in normalized for term in ["рассчит", "calculation", "calculate"])
+
+
+def _find_code_topic_rows(query: str, records: list[SearchRecord], target_code: str | None = None, limit: int = 8) -> list[SearchRecord]:
+    row_candidates = [record for record in records if record.record_type == "table_row"]
+    if target_code:
+        prefixed = [
+            record
+            for record in row_candidates
+            if any(code == target_code or code.startswith(f"{target_code}.") for code in _extract_codes_from_text(record.text))
+        ]
+        if prefixed:
+            return prefixed[:limit]
+
+    query_stems = _topic_stems(query)
+    if not query_stems:
+        return []
+
+    scored: list[tuple[int, int, SearchRecord]] = []
+    for record in row_candidates:
+        record_stems = _topic_stems(record.text)
+        overlap = [stem for stem in query_stems if stem in record_stems]
+        if not overlap:
+            continue
+        score = len(overlap) * 10
+        if len(overlap) == len(query_stems):
+            score += 15
+        if "Приложение 1" in record.section_path:
+            score += 5
+        scored.append((score, len(record.text), record))
+
+    scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    return [record for _, _, record in scored[:limit]]
+
+
+def _topic_stems(value: str) -> set[str]:
+    normalized = normalize_text(value)
+    tokens = re.findall(r"[\w\.\-]+", normalized, flags=re.UNICODE)
+    ignored = {
+        "что", "как", "какие", "какой", "какая", "какие", "которые", "к", "по", "для", "из",
+        "от", "на", "в", "и", "или", "код", "коды", "относятся", "относится", "расчет", "рассчитывается",
+        "document", "code", "codes",
+    }
+    stems: set[str] = set()
+    for token in tokens:
+        if token in ignored or len(token) < 4:
+            continue
+        stems.add(_rough_stem(token))
+    return stems
+
+
+def _rough_stem(token: str) -> str:
+    for suffix in ["иями", "ями", "ами", "ему", "ому", "его", "ого", "ыми", "ими", "иях", "иях", "иях", "иях", "ий", "ый", "ой", "ая", "яя", "ое", "ее", "ые", "ие", "ого", "ему", "ому", "ах", "ях", "ов", "ев", "ом", "ем", "ам", "ям", "ую", "юю", "а", "я", "у", "ю", "е", "о", "ы", "и"]:
+        if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+            return token[: -len(suffix)]
+    return token
+
+
+def _extract_codes_from_text(text: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"\b\d{3,}(?:\.\d+)?\b", text)))
+
+
+def _parse_code_topic_rows(records: list[SearchRecord]) -> list[dict[str, str]]:
+    parsed_rows: list[dict[str, str]] = []
+    for record in records:
+        parsed = _parse_code_row(record.text)
+        if not parsed:
+            continue
+        codes = _extract_codes_from_text(parsed.get("code", ""))
+        if not codes:
+            continue
+        parsed_rows.append(
+            {
+                "record_id": record.record_id,
+                "codes": ", ".join(codes),
+                "content": parsed.get("content", ""),
+                "normatives": parsed.get("normatives", ""),
+                "source_name": record.source_name,
+            }
+        )
+    return parsed_rows
+
+
+def _format_code_group_answer(target_code: str, records: list[SearchRecord], language: str, asks_calculation: bool) -> str:
+    parsed_rows = _parse_code_topic_rows(records)
+    if not parsed_rows:
+        return _format_missing_formula_line(language)
+
+    if language == "en":
+        lines = [f"Codes in the {target_code} group are calculated through these rows:"]
+    else:
+        lines = [f"Коды группы {target_code} рассчитываются по следующим строкам:"]
+
+    for item in parsed_rows[:6]:
+        lines.append(f"- {item['codes']}: {item['content']}")
+        if item["normatives"]:
+            if language == "en":
+                lines.append(f"  Used in: {item['normatives']}")
+            else:
+                lines.append(f"  Используется при расчете: {item['normatives']}")
+
+    if asks_calculation:
+        lines.append(_format_missing_formula_line(language))
+
+    source = parsed_rows[0]
+    lines.append(_format_source_line(source["source_name"], source["record_id"], language))
+    return "\n".join(lines)
+
+
+def _format_code_topic_answer(query: str, records: list[SearchRecord], language: str) -> str:
+    parsed_rows = _parse_code_topic_rows(records)
+    if not parsed_rows:
+        return ""
+
+    if language == "en":
+        lines = [f"Codes related to '{query}' found in the document:"]
+    else:
+        lines = [f"В документе найдены следующие коды по запросу '{query}':"]
+
+    for item in parsed_rows[:8]:
+        lines.append(f"- {item['codes']}: {item['content']}")
+
+    source = parsed_rows[0]
+    lines.append(_format_source_line(source["source_name"], source["record_id"], language))
+    return "\n".join(lines)
 
 
 def _format_code_line(target_code: str, content: str, language: str) -> str:
