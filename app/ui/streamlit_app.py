@@ -6,10 +6,12 @@ import time
 
 from app.agents.answer import build_answer_context
 from app.agents.code_lookup import try_build_code_lookup_answer, try_build_code_topic_answer
-from app.agents.controller import run_agent_retrieval
+from app.agents.controller import AgentRetrievalResult, AgentStep, run_agent_retrieval
 from app.agents.embedding_indexer import build_embedding_index, select_embedding_records
+from app.agents.full_context import answer_with_full_context, should_use_full_context
 from app.agents.norm_lookup import try_build_norm_lookup_answer
 from app.agents.query_understanding import QueryUnderstanding, build_query_suggestions
+from app.agents.router import resolve_query_route
 from app.agents.term_lookup import try_build_term_lookup_answer
 from app.core.config import AppConfig
 from app.core.i18n import SUPPORTED_LANGUAGES, normalize_language, t
@@ -19,6 +21,8 @@ from app.providers.base import BaseProvider, ProviderError
 from app.providers.ollama import OllamaProvider
 from app.providers.openrouter import OpenRouterProvider
 from app.providers.router import ProviderRouter
+from app.retrieval.evidence import validate_evidence
+from app.retrieval.rerank import rerank_results
 from app.retrieval.records import SearchRecord, build_search_records
 from app.storage.conversations import clear_conversation, load_conversation, save_conversation
 from app.storage.files import save_parsed_payload, save_uploaded_docx
@@ -260,6 +264,7 @@ def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str 
     for message in st.session_state["messages"]:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            _render_recognized_formulas(message.get("recognized_formulas"), language)
             _render_formula_images(message.get("formula_images"))
 
     prompt = st.chat_input(t("chat.placeholder", language))
@@ -273,22 +278,33 @@ def _render_chat(provider, chat_model: str, embed_model: str, workspace_id: str 
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        answer, formula_images = _answer_question(provider, chat_model, embed_model, workspace_id, prompt, language)
+        answer, formula_images, recognized_formulas = _answer_question(provider, chat_model, embed_model, workspace_id, prompt, language)
         st.write_stream(_stream_text(answer))
+        _render_recognized_formulas(recognized_formulas, language)
         _render_formula_images(formula_images)
 
     assistant_message = {"role": "assistant", "content": answer}
+    if recognized_formulas:
+        assistant_message["recognized_formulas"] = recognized_formulas
     if formula_images:
         assistant_message["formula_images"] = formula_images
     st.session_state["messages"].append(assistant_message)
     save_conversation(workspace_id, st.session_state["messages"])
 
 
-def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: str, prompt: str, language: str) -> tuple[str, list[dict]]:
+def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: str, prompt: str, language: str) -> tuple[str, list[dict], list[str]]:
     records = load_workspace_records(workspace_id)
     embeddings = load_workspace_embeddings(workspace_id)
     entities = save_workspace_entities(workspace_id, records)
     formula_images_by_id = load_workspace_formula_images(workspace_id)
+    route = resolve_query_route(
+        provider,
+        chat_model,
+        prompt,
+        records,
+        known_entities=entities,
+        language=language,
+    )
 
     if _is_document_summary_query(prompt):
         summary_answer = _build_document_summary(records, language)
@@ -298,8 +314,44 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
             "query_resolution": "document_summary",
             "workspace_id": workspace_id,
             "answer_mode": "deterministic_document_summary",
+            "mode_selector": {
+                "route_action": route.action,
+                "route_source": route.source,
+                "route_confidence": route.confidence,
+                "full_context_selected": False,
+            },
+            "route": asdict(route),
         }
-        return summary_answer, []
+        return summary_answer, [], []
+
+    use_full_context = should_use_full_context(records, requested_by_route=route.use_full_context, action=route.action)
+    if use_full_context:
+        full_context_answer = answer_with_full_context(
+            provider,
+            chat_model,
+            records,
+            prompt,
+            entities=route.entities,
+            action=route.action,
+            language=language,
+        )
+        st.session_state["last_debug"] = {
+            "query": prompt,
+            "effective_query": prompt,
+            "query_resolution": "full_context",
+            "workspace_id": workspace_id,
+            "answer_mode": "full_context",
+            "mode_selector": {
+                "route_action": route.action,
+                "route_source": route.source,
+                "route_confidence": route.confidence,
+                "full_context_selected": True,
+            },
+            "route": asdict(route),
+            "document_tokens": estimate_tokens(full_context_answer.prompt),
+            "citations": full_context_answer.citations[:20],
+        }
+        return full_context_answer.answer, [], []
 
     effective_query, agent_result, query_resolution = _resolve_query_with_context(
         provider=provider,
@@ -308,6 +360,7 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
         entities=entities,
         prompt=prompt,
         embed_model=embed_model,
+        route=route,
     )
     st.session_state["last_effective_query"] = effective_query
 
@@ -319,15 +372,24 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
         "query_type": agent_result.query_type,
         "query_entity": agent_result.entity,
         "mode": agent_result.mode,
+        "mode_selector": {
+            "route_action": route.action,
+            "route_source": route.source,
+            "route_confidence": route.confidence,
+            "full_context_selected": False,
+        },
+        "route": asdict(route),
         "evidence": asdict(agent_result.evidence),
         "steps": [{"name": step.name, "details": step.details} for step in agent_result.steps],
         "results": [_result_to_debug(result) for result in agent_result.results],
     }
 
     if not agent_result.results:
-        return t("no_results", language), []
+        return t("no_results", language), [], []
 
-    code_answer = try_build_code_lookup_answer(effective_query, agent_result.results, language=language)
+    code_answer = None
+    if route.action == "lookup_entity":
+        code_answer = try_build_code_lookup_answer(effective_query, agent_result.results, language=language)
     if code_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
         return _finalize_formula_delivery(
@@ -338,7 +400,9 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
             language,
         )
 
-    code_topic_answer = try_build_code_topic_answer(effective_query, records, language=language)
+    code_topic_answer = None
+    if route.action in {"topic_query", "lookup_entity"}:
+        code_topic_answer = try_build_code_topic_answer(effective_query, records, language=language)
     if code_topic_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_topic_lookup"
         return _finalize_formula_delivery(
@@ -349,7 +413,9 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
             language,
         )
 
-    norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results, language=language)
+    norm_answer = None
+    if route.action == "lookup_entity" and not _is_multi_norm_comparison_query(effective_query):
+        norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results, language=language)
     if norm_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
         return _finalize_formula_delivery(
@@ -360,19 +426,21 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
             language,
         )
 
-    term_answer = try_build_term_lookup_answer(
-        QueryUnderstanding(intent=agent_result.query_type, entity=agent_result.entity),
-        agent_result.results,
-        records,
-        language=language,
-    )
+    term_answer = None
+    if route.action == "lookup_entity":
+        term_answer = try_build_term_lookup_answer(
+            QueryUnderstanding(intent=agent_result.query_type, entity=agent_result.entity),
+            agent_result.results,
+            records,
+            language=language,
+        )
     if term_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_term_lookup"
-        return term_answer.answer, []
+        return term_answer.answer, [], []
 
     if not agent_result.evidence.ok:
         st.session_state["last_debug"]["answer_mode"] = "weak_evidence_refusal"
-        return _with_suggestions(t("no_results", language), prompt, agent_result, language), []
+        return _with_suggestions(t("no_results", language), prompt, agent_result, language), [], []
 
     answer_context = build_answer_context(
         effective_query,
@@ -386,9 +454,9 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     try:
         generated = provider.generate(answer_context.prompt, model=chat_model)
     except ProviderError as exc:
-        return t("model_unavailable", language, error=exc), []
+        return t("model_unavailable", language, error=exc), [], []
     except Exception as exc:
-        return t("answer_failed", language, error=exc), []
+        return t("answer_failed", language, error=exc), [], []
 
     answer_text = generated.text or t("empty_answer", language)
     return _finalize_formula_delivery(
@@ -406,7 +474,27 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     )
 
 
-def _resolve_query_with_context(provider, records: list[SearchRecord], embeddings, entities: list[str], prompt: str, embed_model: str):
+def _is_multi_norm_comparison_query(prompt: str) -> bool:
+    return len(_extract_norm_targets_for_comparison(prompt)) >= 2 and _has_comparison_intent(prompt)
+
+
+def _resolve_query_with_context(provider, records: list[SearchRecord], embeddings, entities: list[str], prompt: str, embed_model: str, route=None):
+    comparison_targets = _comparison_targets(prompt, route)
+    route_requests_comparison = getattr(route, "action", None) == "compare_entities"
+    if len(comparison_targets) >= 2 and (route_requests_comparison or _has_comparison_intent(prompt)):
+        comparison_result = _run_comparison_retrieval(
+            provider=provider,
+            records=records,
+            embeddings=embeddings,
+            entities=entities,
+            prompt=prompt,
+            embed_model=embed_model,
+            targets=comparison_targets,
+        )
+        st.session_state["last_user_query"] = prompt
+        st.session_state.pop("last_query_target", None)
+        return prompt, comparison_result, "standalone_multi_target_comparison"
+
     standalone_result = run_agent_retrieval(
         provider=provider,
         records=records,
@@ -447,6 +535,110 @@ def _resolve_query_with_context(provider, records: list[SearchRecord], embedding
     return contextual_query, contextual_result, "contextual_after_empty_standalone"
 
 
+def _comparison_targets(prompt: str, route=None) -> list[str]:
+    route_entities = []
+    if route is not None:
+        route_entities = [str(item) for item in getattr(route, "entities", []) if isinstance(item, str) and item.strip()]
+    if len(route_entities) >= 2:
+        return route_entities
+    return _extract_norm_targets_for_comparison(prompt)
+
+
+def _run_comparison_retrieval(
+    provider,
+    records: list[SearchRecord],
+    embeddings,
+    entities: list[str],
+    prompt: str,
+    embed_model: str,
+    targets: list[str],
+) -> AgentRetrievalResult:
+    steps: list[AgentStep] = [AgentStep("comparison_targets", {"targets": ", ".join(targets), "count": len(targets)})]
+    per_target_results: list[list] = []
+    rerank_entities = [target for target in targets if target]
+
+    for target in targets:
+        target_result = run_agent_retrieval(
+            provider=provider,
+            records=records,
+            embedding_records=embeddings,
+            query=target,
+            embed_model=embed_model,
+            entity_names=entities,
+            limit=8,
+        )
+        steps.append(AgentStep("comparison_target_results", {"target": target, "result_count": len(target_result.results)}))
+        per_target_results.append(target_result.results[:6])
+
+    merged_results = _interleave_comparison_results(per_target_results)
+    merged_results = rerank_results(prompt, merged_results, rerank_entities, limit=12)
+    steps.append(AgentStep("comparison_merge_rerank", {"entity_count": len(rerank_entities), "result_count": len(merged_results)}))
+
+    evidence = validate_evidence(merged_results)
+    steps.append(
+        AgentStep(
+            "validate_evidence",
+            {
+                "ok": evidence.ok,
+                "confidence": evidence.confidence,
+                "reason": evidence.reason,
+                "top_score": evidence.top_score,
+            },
+        )
+    )
+    return AgentRetrievalResult(
+        query=prompt,
+        query_type="semantic",
+        entity=None,
+        mode="comparison",
+        results=merged_results,
+        evidence=evidence,
+        steps=steps,
+    )
+
+
+def _interleave_comparison_results(per_target_results: list[list]) -> list:
+    merged_results = []
+    seen_ids: set[str] = set()
+    depth = max((len(items) for items in per_target_results), default=0)
+    for index in range(depth):
+        for items in per_target_results:
+            if index >= len(items):
+                continue
+            item = items[index]
+            if item.record.record_id in seen_ids:
+                continue
+            seen_ids.add(item.record.record_id)
+            merged_results.append(item)
+    return merged_results
+
+
+def _extract_norm_targets_for_comparison(prompt: str) -> list[str]:
+    found: list[str] = []
+    for match in re.finditer(r"\b[НN]\s*\d+(?:\.\d+)?\b", prompt, flags=re.IGNORECASE):
+        target = match.group(0).replace(" ", "").upper().replace("N", "Н")
+        if target not in found:
+            found.append(target)
+    return found
+
+
+def _has_comparison_intent(prompt: str) -> bool:
+    normalized = prompt.lower().replace("ё", "е")
+    return any(
+        marker in normalized
+        for marker in [
+            "в чем разница",
+            "чем отличается",
+            "отличается от",
+            "сравни",
+            "сравнение",
+            "difference",
+            "compare",
+            "comparison",
+        ]
+    )
+
+
 def _previous_user_message() -> str | None:
     for message in reversed(st.session_state.get("messages", [])[:-1]):
         if message.get("role") == "user":
@@ -467,6 +659,10 @@ def _extract_query_target(prompt: str) -> str | None:
 
 
 def _answer_context_limit(results: list, query_type: str, entity: str | None = None) -> int:
+    last_debug = st.session_state.get("last_debug", {})
+    route = last_debug.get("route", {}) if isinstance(last_debug, dict) else {}
+    if route.get("action") == "compare_entities":
+        return 12
     if query_type in {"definition", "composition", "formula", "norm"} or entity:
         return 12
     if any(result.record.record_type in {"table_cell", "table_row"} for result in results[:12]):
@@ -826,9 +1022,9 @@ def _finalize_formula_delivery(
     formula_images: list[dict],
     formula_images_by_id: dict[str, object],
     language: str,
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[dict], list[str]]:
     if not formula_images:
-        return answer, []
+        return answer, [], []
 
     recognized_formulas: list[str] = []
     remaining_images: list[dict] = []
@@ -860,12 +1056,8 @@ def _finalize_formula_delivery(
         remaining_images.append(item)
 
     if not recognized_formulas:
-        return answer, formula_images
-
-    recognized_block = _format_recognized_formulas(recognized_formulas, language)
-    if answer.strip():
-        return f"{answer}\n\n{recognized_block}", remaining_images
-    return recognized_block, remaining_images
+        return answer, formula_images, []
+    return answer, remaining_images, recognized_formulas
 
 
 def _on_demand_formula_model(provider) -> str:
@@ -874,14 +1066,38 @@ def _on_demand_formula_model(provider) -> str:
     return ON_DEMAND_OLLAMA_FORMULA_MODEL
 
 
-def _format_recognized_formulas(formulas: list[str], language: str) -> str:
-    if language == "en":
-        header = "Recognized formulas:"
-    else:
-        header = "Распознанные формулы:"
-    lines = [header]
-    lines.extend(f"- `{formula}`" for formula in formulas)
-    return "\n".join(lines)
+def _render_recognized_formulas(formulas: list[str] | None, language: str) -> None:
+    if not formulas:
+        return
+    st.caption("Recognized formulas:" if language == "en" else "Распознанные формулы:")
+    for formula in formulas:
+        cleaned = _clean_formula_for_display(formula)
+        latex_formula = _latex_ready_formula(cleaned)
+        with st.container(border=True):
+            if latex_formula is not None:
+                st.latex(latex_formula)
+                if cleaned != latex_formula:
+                    st.caption(cleaned)
+            else:
+                st.code(cleaned, language="text")
+
+
+def _latex_ready_formula(formula: str) -> str | None:
+    normalized = formula.strip().strip("$")
+    if not normalized:
+        return None
+    normalized = normalized.replace("\\ge ", "\\geq ").replace("\\le ", "\\leq ")
+    if any(token in normalized for token in ["\\frac", "\\sum", "\\times", "\\geq", "\\leq", "^", "_", "{", "}"]):
+        return normalized
+    return None
+
+
+def _clean_formula_for_display(formula: str) -> str:
+    normalized = formula.strip().strip("`")
+    normalized = re.sub(r"^\s*[-*]\s*", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = normalized.replace("OBT", "ОВТ")
+    return normalized.strip()
 
 
 def _collect_formula_images(results, formula_images_by_id: dict[str, object], query_type: str | None = None, entity: str | None = None, limit: int = 6) -> list[dict]:
@@ -915,9 +1131,9 @@ def _collect_formula_images_for_citations(
     question: str | None = None,
     limit: int = 6,
 ) -> list[dict]:
-    normalized_question = (question or "").lower().replace("ё", "е")
+    normalized_question = _normalize_formula_question(question)
     asks_formula = query_type in {"formula", "norm"} or any(
-        token in normalized_question for token in ["формул", "рассчит", "calculate", "formula", "how is"]
+        token in normalized_question for token in ["??????", "???????", "calculate", "formula", "how is"]
     )
     if not asks_formula:
         return []
@@ -925,7 +1141,15 @@ def _collect_formula_images_for_citations(
     cited_ids = {str(item.get("id")) for item in citations if item.get("id")}
     if not cited_ids:
         return []
-    return _collect_formula_images_for_record_ids(results, cited_ids, formula_images_by_id, limit=limit)
+
+    direct = _collect_formula_images_for_record_ids(results, cited_ids, formula_images_by_id, limit=limit)
+    if direct:
+        return direct
+
+    local_results = [result for result in results if result.record.record_id in cited_ids]
+    if not _has_local_formula_anchor(local_results):
+        return []
+    return _collect_formula_images_from_anchor_window(local_results, formula_images_by_id, before=0, after=1, limit=limit)
 
 
 def _collect_formula_images_for_code_answer(code_answer, results, formula_images_by_id: dict[str, object], limit: int = 6) -> list[dict]:
@@ -966,6 +1190,18 @@ def _collect_formula_images_for_record_ids(results, record_ids: set[str], formul
             if len(collected) >= limit:
                 return collected
     return collected
+
+
+def _normalize_formula_question(question: str | None) -> str:
+    return (question or "").lower().replace("ё", "е")
+
+
+def _has_local_formula_anchor(results) -> bool:
+    for result in results:
+        asset_ids = result.record.metadata.get("formula_image_ids", [])
+        if isinstance(asset_ids, list) and asset_ids:
+            return True
+    return False
 
 
 def _collect_formula_images_from_anchor_window(

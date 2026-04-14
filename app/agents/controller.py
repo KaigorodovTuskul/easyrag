@@ -9,6 +9,7 @@ from app.retrieval.evidence import EvidenceReport, validate_evidence
 from app.retrieval.exact import SearchResult, normalize_text
 from app.retrieval.hybrid import HybridSearchTrace, search_hybrid
 from app.retrieval.records import SearchRecord
+from app.retrieval.rerank import rerank_results
 from app.retrieval.vector import EmbeddingRecord
 
 
@@ -66,6 +67,9 @@ def run_agent_retrieval(
 
     results = _expand_table_context(records, results)
     results = _expand_paragraph_context(records, results, normalized_query)
+    rerank_entities = entities_for_rerank(query, entity)
+    results = rerank_results(normalized_query, results, rerank_entities, limit=limit)
+    steps.append(AgentStep("rerank_results", {"entity_count": len(rerank_entities), "result_count": len(results)}))
 
     if not results and query_type not in {"exact", "definition", "composition", "formula", "norm"}:
         rewritten = rewrite_query(normalized_query)
@@ -82,6 +86,9 @@ def run_agent_retrieval(
             results = _run_retrieval(provider, candidate_records, candidate_embeddings, rewritten, embed_model, mode, limit, steps)
             results = _expand_table_context(records, results)
             results = _expand_paragraph_context(records, results, rewritten)
+            rerank_entities = entities_for_rerank(query, entity)
+            results = rerank_results(rewritten, results, rerank_entities, limit=limit)
+            steps.append(AgentStep("rerank_results", {"entity_count": len(rerank_entities), "result_count": len(results), "rewritten": True}))
 
     evidence = validate_evidence(results)
     steps.append(
@@ -105,6 +112,21 @@ def run_agent_retrieval(
         evidence=evidence,
         steps=steps,
     )
+
+
+def entities_for_rerank(query: str, entity: str | None) -> list[str]:
+    found: list[str] = []
+    if entity:
+        found.append(entity)
+    for match in re.finditer(r"\b[РќN]\s*\d+(?:\.\d+)?\b", query, flags=re.IGNORECASE):
+        value = match.group(0).replace(" ", "").upper()
+        if value not in found:
+            found.append(value)
+    for match in re.finditer(r"\b\d{3,}(?:\.\d+)?\b", query):
+        value = match.group(0)
+        if value not in found:
+            found.append(value)
+    return found
 
 
 def normalize_query(query: str) -> str:

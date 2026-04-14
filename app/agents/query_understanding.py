@@ -39,6 +39,9 @@ class QueryUnderstanding:
 
 def classify_intent(query: str) -> str:
     normalized = _normalize(query)
+    norm_targets = re.findall(r"\b[\u043dn]\s*\d+(?:\.\d+)?\b", normalized)
+    if len(norm_targets) >= 2 and _has_comparison_intent(normalized):
+        return "semantic"
 
     if re.search(r"\b[\u043dn]\s*\d+(?:\.\d+)?\b", normalized):
         if any(term in normalized for term in RU_FORMULA_TERMS):
@@ -64,9 +67,11 @@ def classify_intent(query: str) -> str:
 
 
 def extract_query_entity(query: str, entity_names: list[str]) -> str | None:
-    norm_match = re.search(r"\b[\u041dN]\s*\d+(?:\.\d+)?\b", query, flags=re.IGNORECASE)
-    if norm_match:
-        return norm_match.group(0).replace(" ", "").upper().replace("N", "\u041d")
+    norm_matches = re.findall(r"\b[\u041dN]\s*\d+(?:\.\d+)?\b", query, flags=re.IGNORECASE)
+    if len(norm_matches) >= 2 and _has_comparison_intent(_normalize(query)):
+        return None
+    if norm_matches:
+        return norm_matches[0].replace(" ", "").upper().replace("N", "\u041d")
 
     normalized_query = _normalize(query)
     candidates = sorted({name for name in entity_names if name}, key=len, reverse=True)
@@ -171,3 +176,19 @@ def _normalize(value: str) -> str:
     lowered = value.lower().replace("\u0451", "\u0435")
     lowered = re.sub(r"\s+", " ", lowered).strip()
     return lowered
+
+
+def _has_comparison_intent(normalized_query: str) -> bool:
+    return any(
+        marker in normalized_query
+        for marker in [
+            "\u0432 \u0447\u0435\u043c \u0440\u0430\u0437\u043d\u0438\u0446\u0430",
+            "\u0447\u0435\u043c \u043e\u0442\u043b\u0438\u0447\u0430\u0435\u0442\u0441\u044f",
+            "\u043e\u0442\u043b\u0438\u0447\u0430\u0435\u0442\u0441\u044f \u043e\u0442",
+            "\u0441\u0440\u0430\u0432\u043d\u0438",
+            "\u0441\u0440\u0430\u0432\u043d\u0435\u043d\u0438\u0435",
+            "difference",
+            "compare",
+            "comparison",
+        ]
+    )

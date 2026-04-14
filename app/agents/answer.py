@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from app.retrieval.evidence import EvidenceReport
 from app.retrieval.exact import SearchResult
@@ -50,6 +51,7 @@ def build_answer_context(
 
     answer_mode = _select_answer_mode(results, evidence)
     answer_language = "Russian" if language == "ru" else "English"
+    compare_note = _compare_instruction(question, language)
     prompt = "\n\n".join(
         [
             "You are a precise RAG answerer for corporate documents.",
@@ -59,6 +61,7 @@ def build_answer_context(
             "Cite supporting context with bracket references like [1], [2].",
             f"Answer mode: {answer_mode}.",
             f"Evidence: {evidence.reason if evidence else 'not_checked'}.",
+            compare_note,
             "",
             f"Question: {question}",
             "",
@@ -78,3 +81,23 @@ def _select_answer_mode(results: list[SearchResult], evidence: EvidenceReport | 
     if results and results[0].record.record_type in {"table_cell", "table_row"}:
         return "extractive_table_answer"
     return "grounded_summary"
+
+
+def _compare_instruction(question: str, language: str) -> str:
+    normalized = question.lower().replace("ё", "е")
+    explicit_entities = re.findall(r"\b[нn]\s*\d+(?:\.\d+)?\b|\b\d{3,}(?:\.\d+)?\b", normalized)
+    asks_compare = len(explicit_entities) >= 2 and any(
+        marker in normalized
+        for marker in ["разница", "отлич", "сравни", "сравнение", "difference", "compare", "comparison"]
+    )
+    if not asks_compare:
+        return "Comparison mode: off."
+    if language == "en":
+        return (
+            "Comparison mode: on. Compare all requested entities explicitly. "
+            "Do not answer about only the first one. Structure the answer as: entity A, entity B, key differences."
+        )
+    return (
+        "Comparison mode: on. Сравни все запрошенные сущности явно. "
+        "Не отвечай только про первую. Структурируй ответ так: первая сущность, вторая сущность, ключевые различия."
+    )

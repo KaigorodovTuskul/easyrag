@@ -20,6 +20,8 @@ def load_conversation(workspace_id: str) -> list[dict]:
         if item.get("role") not in {"user", "assistant"} or "content" not in item:
             continue
         message = {"role": item["role"], "content": item["content"]}
+        if isinstance(item.get("recognized_formulas"), list):
+            message["recognized_formulas"] = [str(value) for value in item["recognized_formulas"] if isinstance(value, str)]
         if isinstance(item.get("formula_images"), list):
             message["formula_images"] = item["formula_images"]
         messages.append(message)
