@@ -14,6 +14,7 @@ from app.agents.term_lookup import try_build_term_lookup_answer
 from app.core.config import AppConfig
 from app.core.i18n import SUPPORTED_LANGUAGES, normalize_language, t
 from app.ingestion.formula_enrichment import enrich_formula_records
+from app.ingestion.formula_vision import recognize_formula_image
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.ollama import OllamaProvider
 from app.providers.openrouter import OpenRouterProvider
@@ -23,6 +24,7 @@ from app.storage.conversations import clear_conversation, load_conversation, sav
 from app.storage.files import save_parsed_payload, save_uploaded_docx
 from app.storage.formula_images import (
     load_workspace_formula_images,
+    read_formula_image_bytes,
     read_formula_image_for_display,
     save_workspace_formula_images,
 )
@@ -44,6 +46,10 @@ try:
     import streamlit as st
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Streamlit is not installed. Install dependencies before running the UI.") from exc
+
+
+ON_DEMAND_OLLAMA_FORMULA_MODEL = "qwen3-vl:32b"
+ON_DEMAND_OPENROUTER_FORMULA_MODEL = "qwen/qwen3-vl-32b-instruct"
 
 
 def main() -> None:
@@ -324,17 +330,35 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
     code_answer = try_build_code_lookup_answer(effective_query, agent_result.results, language=language)
     if code_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_lookup"
-        return code_answer.answer, _collect_formula_images_for_code_answer(code_answer, agent_result.results, formula_images_by_id)
+        return _finalize_formula_delivery(
+            provider,
+            code_answer.answer,
+            _collect_formula_images_for_code_answer(code_answer, agent_result.results, formula_images_by_id),
+            formula_images_by_id,
+            language,
+        )
 
     code_topic_answer = try_build_code_topic_answer(effective_query, records, language=language)
     if code_topic_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_code_topic_lookup"
-        return code_topic_answer.answer, _collect_formula_images_for_record_ids(agent_result.results, set(code_topic_answer.source_record_ids), formula_images_by_id)
+        return _finalize_formula_delivery(
+            provider,
+            code_topic_answer.answer,
+            _collect_formula_images_for_record_ids(agent_result.results, set(code_topic_answer.source_record_ids), formula_images_by_id),
+            formula_images_by_id,
+            language,
+        )
 
     norm_answer = try_build_norm_lookup_answer(effective_query, agent_result.results, language=language)
     if norm_answer is not None:
         st.session_state["last_debug"]["answer_mode"] = "deterministic_norm_lookup"
-        return norm_answer.answer, _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity)
+        return _finalize_formula_delivery(
+            provider,
+            norm_answer.answer,
+            _collect_formula_images(agent_result.results, formula_images_by_id, agent_result.query_type, agent_result.entity),
+            formula_images_by_id,
+            language,
+        )
 
     term_answer = try_build_term_lookup_answer(
         QueryUnderstanding(intent=agent_result.query_type, entity=agent_result.entity),
@@ -367,12 +391,18 @@ def _answer_question(provider, chat_model: str, embed_model: str, workspace_id: 
         return t("answer_failed", language, error=exc), []
 
     answer_text = generated.text or t("empty_answer", language)
-    return _with_suggestions(answer_text, prompt, agent_result, language), _collect_formula_images_for_citations(
-        answer_context.citations,
-        agent_result.results,
+    return _finalize_formula_delivery(
+        provider,
+        _with_suggestions(answer_text, prompt, agent_result, language),
+        _collect_formula_images_for_citations(
+            answer_context.citations,
+            agent_result.results,
+            formula_images_by_id,
+            query_type=agent_result.query_type,
+            question=effective_query,
+        ),
         formula_images_by_id,
-        query_type=agent_result.query_type,
-        question=effective_query,
+        language,
     )
 
 
@@ -788,6 +818,70 @@ def _build_document_summary(records: list[SearchRecord], language: str) -> str:
         if appendix_rows:
             lines.append("В документе также есть Приложение 1 с кодами, используемыми при расчете нормативов и связанных рисков.")
     return "\n\n".join(lines)
+
+
+def _finalize_formula_delivery(
+    provider,
+    answer: str,
+    formula_images: list[dict],
+    formula_images_by_id: dict[str, object],
+    language: str,
+) -> tuple[str, list[dict]]:
+    if not formula_images:
+        return answer, []
+
+    recognized_formulas: list[str] = []
+    remaining_images: list[dict] = []
+    attempted = 0
+    model = _on_demand_formula_model(provider)
+
+    for item in formula_images:
+        asset_id = item.get("asset_id")
+        stored = formula_images_by_id.get(asset_id) if asset_id else None
+        if stored is None or attempted >= 3:
+            remaining_images.append(item)
+            continue
+
+        attempted += 1
+        try:
+            recognized = recognize_formula_image(
+                provider,
+                read_formula_image_bytes(stored),
+                stored.filename,
+                model=model,
+            )
+        except Exception:
+            recognized = None
+
+        if recognized:
+            if recognized not in recognized_formulas:
+                recognized_formulas.append(recognized)
+            continue
+        remaining_images.append(item)
+
+    if not recognized_formulas:
+        return answer, formula_images
+
+    recognized_block = _format_recognized_formulas(recognized_formulas, language)
+    if answer.strip():
+        return f"{answer}\n\n{recognized_block}", remaining_images
+    return recognized_block, remaining_images
+
+
+def _on_demand_formula_model(provider) -> str:
+    if getattr(provider, "name", "") == "openrouter":
+        return ON_DEMAND_OPENROUTER_FORMULA_MODEL
+    return ON_DEMAND_OLLAMA_FORMULA_MODEL
+
+
+def _format_recognized_formulas(formulas: list[str], language: str) -> str:
+    if language == "en":
+        header = "Recognized formulas:"
+    else:
+        header = "Распознанные формулы:"
+    lines = [header]
+    lines.extend(f"- `{formula}`" for formula in formulas)
+    return "\n".join(lines)
 
 
 def _collect_formula_images(results, formula_images_by_id: dict[str, object], query_type: str | None = None, entity: str | None = None, limit: int = 6) -> list[dict]:
